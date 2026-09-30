@@ -1,0 +1,11 @@
+# Local rehearsal without a cluster: Salesforce MCP server on :8090 and the console on :3000.
+# Governance itself needs Agent Manager. Use this to rehearse the ungoverned half and to try the dashboard.
+services:
+  salesforce-mcp:
+    build: ./salesforce-mcp
+    ports: ["8090:8080"]
+    environment:
+      SF_API_KEYS: "direct=sf-direct-demo-key,gateway=sf-gateway-demo-key"
+  console:
+    build: ./governance-console
+    ports: ["3000:80"]

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sales Copilot · Trusted AI Governance</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="chatpage">
+  <div class="shell">
+    <section class="chatcol">
+      <header class="chathead">
+        <div class="who">
+          <div class="avatar" id="avatar">AR</div>
+          <div><b id="whoName">Alex Rivera</b><span id="whoRole">Senior Account Manager · West</span></div>
+        </div>
+        <div class="headtools">
+          <div class="gsw" title="Switch between the ungoverned and the governed agent">
+            <label for="gswitch">Governance</label>
+            <span class="state" id="gstate">OFF</span>
+            <button class="switch" id="gswitch" role="switch" aria-checked="false" aria-label="Governance"></button>
+          </div>
+          <button class="btn iconbtn" id="resetBtn" title="Reset demo data, chat and dashboard">↺</button>
+          <button class="btn iconbtn" id="cfgBtn" title="Settings">⚙</button>
+        </div>
+      </header>
+      <div class="modebar off" id="modebar"></div>
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <div class="chips" id="chips"></div>
+        <div class="inputrow">
+          <textarea id="input" rows="1" placeholder="Ask Sales Copilot about your quota, accounts or pipeline…"></textarea>
+          <button class="send" id="send" title="Send">➤</button>
+        </div>
+      </div>
+    </section>
+    <section class="dashcol"><iframe src="dashboard.html?compact=1" title="Governance dashboard"></iframe></section>
+  </div>
+
+  <div class="drawer" id="drawer">
+    <div class="sheet">
+      <h2>Settings</h2>
+      <p>Stored in this browser only. The chat page calls the agents directly, so each agent needs its invoke URL
+        and, if API key security is on, an API key. Agent Manager allows browser calls (CORS) by default.</p>
+      <fieldset><legend>Governed agent (Governance ON)</legend>
+        <label>Chat URL</label><input id="gUrl" placeholder="http://…/chat">
+        <label>API key (X-API-Key)</label><input id="gKey" placeholder="paste the key from Credentials">
+      </fieldset>
+      <fieldset><legend>Ungoverned agent (Governance OFF)</legend>
+        <label>Chat URL</label><input id="uUrl" placeholder="http://…/chat">
+        <label>API key (X-API-Key)</label><input id="uKey" placeholder="paste the key from Credentials">
+      </fieldset>
+      <fieldset><legend>Salesforce MCP server (audit feed)</legend>
+        <label>Base URL</label><input id="aUrl" placeholder="http://localhost:8090">
+      </fieldset>
+      <div class="actions"><button class="btn" id="cfgCancel">Cancel</button><button class="btn" id="cfgSave" style="background:linear-gradient(135deg,#6366f1,#22d3ee);color:#06101f;font-weight:700;border:0">Save</button></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="js/bus.js"></script>
+  <script src="js/chat.js"></script>
+</body>
+</html>

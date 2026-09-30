@@ -1,0 +1,60 @@
+# Mock Salesforce MCP server, deployed next to Agent Manager in the same cluster.
+# In-cluster URL for the MCP proxy and the ungoverned agent:
+#   http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sales-demo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: salesforce-mcp-keys
+  namespace: sales-demo
+type: Opaque
+stringData:
+  # channel=key pairs. "direct" is the shared integration key the ungoverned agent holds.
+  # "gateway" is the credential the Agent Manager MCP proxy attaches, so the governed agent never sees it.
+  SF_API_KEYS: "direct=sf-direct-demo-key,gateway=sf-gateway-demo-key"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: salesforce-mcp
+  namespace: sales-demo
+  labels: { app: salesforce-mcp }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: salesforce-mcp }
+  template:
+    metadata:
+      labels: { app: salesforce-mcp }
+    spec:
+      containers:
+        - name: salesforce-mcp
+          image: salesforce-mcp:demo
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef: { name: salesforce-mcp-keys }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: salesforce-mcp
+  namespace: sales-demo
+spec:
+  selector: { app: salesforce-mcp }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

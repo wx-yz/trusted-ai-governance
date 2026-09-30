@@ -1,0 +1,39 @@
+# Static chat + dashboard site (optional: you can also serve governance-console/ from your laptop).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: governance-console
+  namespace: sales-demo
+  labels: { app: governance-console }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: governance-console }
+  template:
+    metadata:
+      labels: { app: governance-console }
+    spec:
+      containers:
+        - name: console
+          image: governance-console:demo
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet: { path: /index.html, port: 80 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: governance-console
+  namespace: sales-demo
+spec:
+  selector: { app: governance-console }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

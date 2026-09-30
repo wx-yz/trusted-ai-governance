@@ -1,0 +1,200 @@
+"""Sales Copilot: a LangGraph tool-calling agent for account managers.
+
+The prompt is deliberately ordinary, the kind a product team writes. It contains no data-isolation rules.
+Everything that keeps the agent safe in the governed deployment is enforced outside this code, by the
+gateway, AgentID and the guardrails attached to the LLM provider.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Any
+
+import openai
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.tools import StructuredTool
+from langchain_openai import ChatOpenAI
+from langgraph.errors import GraphRecursionError
+from langgraph.prebuilt import create_react_agent
+
+from config import Config
+from governance import TurnRecorder, guardrail_info
+from identity import AgentIdentity, IdentityNotReady
+from mcp_client import SalesforceMcp, classify
+
+SYSTEM_PROMPT = (
+    "You are Sales Copilot, an AI assistant for account managers at {company}.\n"
+    "You are helping {name} ({user_id}), {title}, {region} region.\n"
+    "\n"
+    "What you do:\n"
+    "- Answer questions about quota attainment, accounts, pipeline and commission using the Salesforce tools.\n"
+    "- Recommend practical strategies to reach quota, based on the account data you retrieve.\n"
+    "\n"
+    "How to work:\n"
+    "- Always fetch facts with the tools. Never invent numbers.\n"
+    "- Call one tool at a time.\n"
+    "- For strategy questions, combine the quota gap, pipeline by stage, renewal dates and whitespace, "
+    "then give a short prioritized plan with the dollar impact of each move.\n"
+    "- Keep answers tight: short sections, bullets, amounts like $1.7M or $450K.\n"
+    "- If a tool call fails or is denied, say so plainly and explain what you could not do.\n"
+)
+
+DEFAULT_USER = {"id": "AM-101", "name": "Alex Rivera", "title": "Senior Account Manager", "region": "West"}
+
+
+def build_llm(cfg: Config) -> ChatOpenAI:
+    if cfg.use_llm_provider:
+        # Agent Manager LLM provider: the gateway holds the real key and enforces guardrails.
+        return ChatOpenAI(
+            model=cfg.model,
+            temperature=0,
+            base_url=cfg.llm_provider_url,
+            api_key="not-used",
+            default_headers={"API-Key": cfg.llm_provider_key, "Authorization": ""},
+            max_retries=0,
+            timeout=60,
+        )
+    return ChatOpenAI(model=cfg.model, temperature=0, api_key=cfg.openai_api_key, max_retries=1, timeout=60)
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, list):
+        return "\n".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
+    return str(content or "")
+
+
+class SalesCopilot:
+    def __init__(self, cfg: Config) -> None:
+        self.cfg = cfg
+        self.identity = AgentIdentity(cfg)
+        self.mcp = SalesforceMcp(cfg, self.identity)
+        self.sessions: dict[str, list[BaseMessage]] = {}
+        self.tool_total = 0
+
+    # ---- tools ------------------------------------------------------------------------------
+
+    def _make_tools(self, mcp_tools: list[Any], rec: TurnRecorder, user: dict[str, Any]) -> list[StructuredTool]:
+        tools: list[StructuredTool] = []
+        for t in mcp_tools:
+
+            async def run(_name: str = t.name, **kwargs: Any) -> str:
+                call_id = uuid.uuid4().hex[:12]
+                started = time.time()
+                outcome = await self.mcp.call_tool(_name, kwargs, user["id"], call_id)
+                ms = int((time.time() - started) * 1000)
+                if outcome.denied:
+                    rec.add("tool_denied", tool=_name, call_id=call_id, args=kwargs, status=outcome.status,
+                            layer="AgentID", required_scope=outcome.required_scope, detail=outcome.detail, ms=ms)
+                elif not outcome.ok:
+                    rec.add("tool_error", tool=_name, call_id=call_id, args=kwargs, detail=outcome.detail, ms=ms)
+                else:
+                    rec.add("tool_allowed", tool=_name, call_id=call_id, args=kwargs, ms=ms)
+                rec.tool_results += 1
+                return outcome.text  # always a plain string: gateway guardrails inspect message content as text
+
+            tools.append(StructuredTool(
+                name=t.name,
+                description=t.description or t.name,
+                args_schema=t.inputSchema,
+                coroutine=run,
+            ))
+        return tools
+
+    # ---- one chat turn ---------------------------------------------------------------------
+
+    async def chat(self, message: str, session_id: str, context: dict[str, Any] | None) -> dict[str, Any]:
+        cfg = self.cfg
+        started = time.time()
+        user = {**DEFAULT_USER, **((context or {}).get("user") or {})}
+        rec = TurnRecorder()
+        blocked: dict[str, Any] | None = None
+
+        def finish(text: str) -> dict[str, Any]:
+            return {
+                "response": text,
+                "session_id": session_id,
+                "agent_version": cfg.agent_version,
+                "governance": {
+                    "agent": cfg.agent_name,
+                    "identity": self.identity.describe(),
+                    "llm_path": cfg.llm_path,
+                    "mcp_path": cfg.sf_mcp_auth,
+                    "user": {"id": user["id"], "name": user["name"]},
+                    "tools_visible": self.tool_total,
+                    "blocked": blocked,
+                    "events": rec.events,
+                    "elapsed_ms": int((time.time() - started) * 1000),
+                },
+            }
+
+        problems = cfg.problems()
+        if problems:
+            rec.add("config_problem", detail="; ".join(problems))
+            return finish("I am not fully configured yet: " + " ".join(problems))
+
+        # Discover tools. The gateway decides what this identity is allowed to see and call.
+        try:
+            mcp_tools = await self.mcp.list_tools(user["id"], uuid.uuid4().hex[:12])
+        except BaseException as exc:  # noqa: BLE001
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            status, _, msg = classify(exc)
+            rec.add("tool_error", tool="tools/list", detail=f"HTTP {status}: {msg}" if status else msg)
+            return finish(f"I could not reach Salesforce ({msg}).")
+        self.tool_total = len(mcp_tools)
+
+        tools = self._make_tools(mcp_tools, rec, user)
+        llm = build_llm(cfg).bind_tools(tools, parallel_tool_calls=False)
+        graph = create_react_agent(
+            model=llm,
+            tools=tools,
+            prompt=SYSTEM_PROMPT.format(company=cfg.company_name, **{k: user[k] for k in ("name", "title", "region")},
+                                        user_id=user["id"]),
+        )
+        history = self.sessions.get(session_id, [])
+        try:
+            result = await graph.ainvoke(
+                {"messages": [*history, HumanMessage(content=message)]},
+                config={"recursion_limit": cfg.max_tool_steps * 2 + 2},
+            )
+        except openai.APIStatusError as exc:
+            blocked = self._llm_block(exc, rec)
+            return finish(blocked.pop("user_message"))
+        except GraphRecursionError:
+            rec.add("agent_error", detail="step limit reached")
+            return finish("I stopped because this request needed more steps than I am allowed to take.")
+        except IdentityNotReady as exc:
+            rec.add("tool_error", tool="identity", detail=str(exc))
+            return finish(f"I cannot authenticate yet: {exc}.")
+        except Exception as exc:  # noqa: BLE001
+            rec.add("agent_error", detail=str(exc)[:300])
+            return finish(f"Something went wrong while handling that request: {str(exc)[:200]}")
+
+        final = next((_text(m.content) for m in reversed(result["messages"]) if isinstance(m, AIMessage) and _text(m.content)), "(no response)")
+        history = [*history, HumanMessage(content=message), AIMessage(content=final)]
+        self.sessions[session_id] = history[-cfg.history_turns * 2:]
+        return finish(final)
+
+    def _llm_block(self, exc: openai.APIStatusError, rec: TurnRecorder) -> dict[str, Any]:
+        """Turn a gateway rejection of the LLM request into a governance event and a readable reply."""
+        code = exc.status_code
+        if code == 422:
+            info = guardrail_info(exc)
+            phase = "tool-result" if rec.tool_results else "user-prompt"
+            rec.add("llm_guardrail", status=code, phase=phase, **info)
+            where = ("Content returned from Salesforce was flagged and stopped before it reached the model."
+                     if phase == "tool-result" else
+                     "Your message was stopped before it reached the model.")
+            return {"layer": "llm-guardrail", "status": code, "phase": phase, **info,
+                    "user_message": f"Blocked by the AI gateway guardrail ({info['guardrail']}). {where}"}
+        if code == 429:
+            rec.add("llm_rate_limited", status=code)
+            return {"layer": "llm-rate-limit", "status": code,
+                    "user_message": "The AI gateway rate limit for this agent was reached. Please wait a moment."}
+        if code in (401, 403):
+            rec.add("llm_denied", status=code)
+            return {"layer": "llm-access", "status": code,
+                    "user_message": "The AI gateway refused this agent's access to the model."}
+        rec.add("agent_error", detail=f"LLM HTTP {code}")
+        return {"layer": "llm-error", "status": code, "user_message": f"The model request failed (HTTP {code})."}

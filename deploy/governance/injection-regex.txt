@@ -1,0 +1,1 @@
+(?i)(ignore|disregard|forget|override)\s+(all\s+|any\s+|your\s+|the\s+|previous\s+|prior\s+|above\s+|earlier\s+)*(instructions|rules|policies|policy|guidelines)|\b(admin|developer|sudo|god)\s+mode\b|reveal\s+(your\s+)?(system\s+)?prompt

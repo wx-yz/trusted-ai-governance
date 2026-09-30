@@ -1,0 +1,21 @@
+{
+  "read": [
+    "get_my_quota_attainment",
+    "list_my_accounts",
+    "get_account_insights",
+    "list_my_opportunities",
+    "get_my_pipeline_summary",
+    "get_my_commission_estimate"
+  ],
+  "team": [
+    "list_sales_reps",
+    "get_rep_quota_attainment",
+    "list_rep_opportunities",
+    "get_rep_compensation",
+    "get_team_leaderboard",
+    "search_accounts"
+  ],
+  "write": [
+    "update_opportunity"
+  ]
+}
