@@ -1,10 +1,14 @@
-# Local rehearsal without a cluster: Salesforce MCP server on :8090 and the console on :3000.
+# Local run without a cluster: Salesforce MCP server and the console.
+#   http://localhost:3000   demo UI
+#   http://localhost:8090   audit feed for the dashboard (private admin port)
+#   http://localhost:18080  MCP endpoint (/mcp), the only port to publish with a tunnel for Agent Manager
 # Governance itself needs Agent Manager. Use this to rehearse the ungoverned half and to try the dashboard.
 services:
   salesforce-mcp:
     build: ./salesforce-mcp
-    ports: ["8090:8080"]
+    ports: ["18080:8080", "8090:8081"]
     environment:
+      SF_ADMIN_PORT: "8081"
       SF_API_KEYS: "direct=sf-direct-demo-key,gateway=sf-gateway-demo-key"
   console:
     build: ./governance-console

@@ -1,21 +1,12 @@
 # Mock Salesforce MCP server, deployed next to Agent Manager in the same cluster.
-# In-cluster URL for the MCP proxy and the ungoverned agent:
-#   http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp
+#   8080  MCP endpoint (/mcp) and /healthz. The only port that is ever published (see deploy/expose-mcp.sh).
+#   8081  /audit, /catalog, /admin/reset for the dashboard. Keep it private.
+# The ungoverned agent reaches the MCP port in-cluster: http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp
+# The pod reads its API keys from the Secret salesforce-mcp-keys, which deploy/deploy-mcp.sh creates with random values.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: sales-demo
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: salesforce-mcp-keys
-  namespace: sales-demo
-type: Opaque
-stringData:
-  # channel=key pairs. "direct" is the shared integration key the ungoverned agent holds.
-  # "gateway" is the credential the Agent Manager MCP proxy attaches, so the governed agent never sees it.
-  SF_API_KEYS: "direct=sf-direct-demo-key,gateway=sf-gateway-demo-key"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -37,6 +28,10 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
+            - containerPort: 8081
+          env:
+            - name: SF_ADMIN_PORT
+              value: "8081"
           envFrom:
             - secretRef: { name: salesforce-mcp-keys }
           readinessProbe:
@@ -55,6 +50,9 @@ metadata:
 spec:
   selector: { app: salesforce-mcp }
   ports:
-    - name: http
+    - name: mcp
       port: 8080
       targetPort: 8080
+    - name: admin
+      port: 8081
+      targetPort: 8081

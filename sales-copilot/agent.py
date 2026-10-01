@@ -7,6 +7,8 @@ gateway, AgentID and the guardrails attached to the LLM provider.
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 import uuid
 from typing import Any
@@ -18,10 +20,13 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 
+import diagnose
 from config import Config
 from governance import TurnRecorder, guardrail_info
 from identity import AgentIdentity, IdentityNotReady
-from mcp_client import SalesforceMcp, classify
+from mcp_client import SalesforceMcp, classify, explain
+
+log = logging.getLogger("sales-copilot")
 
 SYSTEM_PROMPT = (
     "You are Sales Copilot, an AI assistant for account managers at {company}.\n"
@@ -128,6 +133,9 @@ class SalesCopilot:
                 },
             }
 
+        if diagnose.wants_diagnosis(message):
+            return finish(await diagnose.run(cfg, self.identity, self.mcp, build_llm))
+
         problems = cfg.problems()
         if problems:
             rec.add("config_problem", detail="; ".join(problems))
@@ -140,8 +148,11 @@ class SalesCopilot:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             status, _, msg = classify(exc)
-            rec.add("tool_error", tool="tools/list", detail=f"HTTP {status}: {msg}" if status else msg)
-            return finish(f"I could not reach Salesforce ({msg}).")
+            hint = explain(status, msg)
+            log.warning("tools/list against %s failed: %s", cfg.sf_mcp_url, msg, exc_info=exc)
+            rec.add("tool_error", tool="tools/list", detail=msg)
+            return finish(f"I could not reach Salesforce: {msg}." + (f" {hint}" if hint else "")
+                          + " Send /diagnose for a step by step check.")
         self.tool_total = len(mcp_tools)
 
         tools = self._make_tools(mcp_tools, rec, user)
@@ -179,6 +190,9 @@ class SalesCopilot:
     def _llm_block(self, exc: openai.APIStatusError, rec: TurnRecorder) -> dict[str, Any]:
         """Turn a gateway rejection of the LLM request into a governance event and a readable reply."""
         code = exc.status_code
+        body = getattr(exc, "body", None)
+        snippet = (json.dumps(body) if isinstance(body, (dict, list)) else str(body or "")).strip()[:220]
+        log.warning("LLM request failed with HTTP %s: %s", code, snippet or "(empty body)")
         if code == 422:
             info = guardrail_info(exc)
             phase = "tool-result" if rec.tool_results else "user-prompt"
@@ -192,9 +206,30 @@ class SalesCopilot:
             rec.add("llm_rate_limited", status=code)
             return {"layer": "llm-rate-limit", "status": code,
                     "user_message": "The AI gateway rate limit for this agent was reached. Please wait a moment."}
+        hint = explain_llm(code, snippet, self.cfg)
+        detail = f" {snippet}" if snippet else ""
         if code in (401, 403):
-            rec.add("llm_denied", status=code)
+            rec.add("llm_denied", status=code, detail=snippet)
             return {"layer": "llm-access", "status": code,
-                    "user_message": "The AI gateway refused this agent's access to the model."}
-        rec.add("agent_error", detail=f"LLM HTTP {code}")
-        return {"layer": "llm-error", "status": code, "user_message": f"The model request failed (HTTP {code})."}
+                    "user_message": f"The model request was refused (HTTP {code}).{detail} {hint}".strip()}
+        rec.add("agent_error", detail=f"LLM HTTP {code}: {snippet}")
+        return {"layer": "llm-error", "status": code,
+                "user_message": f"The model request failed (HTTP {code}).{detail} {hint} Send /diagnose for a step by step check.".strip()}
+
+
+def explain_llm(code: int, body: str, cfg: Config) -> str:
+    """A one-line hint for the usual reasons the model call fails."""
+    low = body.lower()
+    if code == 404 and "model" in low:
+        return f"The model name was not found. Set OPENAI_MODEL to a model your key can use (now: {cfg.model})."
+    if code == 404 and cfg.use_llm_provider:
+        return ("The AI gateway has no route for this request. Check that the LLM provider is deployed to the gateway "
+                "(Console: LLM Service Providers, Shared OpenAI) and that it is still attached to this agent.")
+    if code == 404:
+        return f"OpenAI does not know this path or model (model: {cfg.model})."
+    if code in (401, 403):
+        return ("The LLM provider key was rejected. Check the provider's credential." if cfg.use_llm_provider
+                else "OPENAI_API_KEY was rejected.")
+    if code >= 500:
+        return "The gateway or the model provider failed. Try again, and check the gateway logs."
+    return ""

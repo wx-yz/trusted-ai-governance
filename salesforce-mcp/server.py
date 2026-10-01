@@ -18,6 +18,7 @@ HTTP surface
     /audit          audit records, for the demo dashboard (CORS open, demo only)
     /catalog        tool to scope mapping
     /admin/reset    restore seed data and clear the audit log
+  The last three move to SF_ADMIN_PORT when it is set, so the MCP port can be published on its own.
 """
 
 from __future__ import annotations
@@ -34,9 +35,11 @@ from typing import Any
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 import data
 
@@ -64,6 +67,9 @@ def _load_keys() -> dict[str, str]:
 KEYS = _load_keys()
 AUTH_REQUIRED = os.environ.get("SF_AUTH_DISABLED", "false").lower() != "true"
 PORT = int(os.environ.get("PORT", "8080"))
+# When set, /audit, /catalog and /admin/reset are served on this separate port instead of the MCP port. Agent Manager
+# only accepts a public upstream URL, so the MCP port gets published through a tunnel and the admin port must stay private.
+ADMIN_PORT = int(os.environ.get("SF_ADMIN_PORT", "0") or 0)
 
 # Tool -> scope. deploy/governance/scopes.json mirrors this and a test keeps them equal.
 TOOL_SCOPE: dict[str, str] = {
@@ -475,7 +481,6 @@ async def healthz(_: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "as_of": data.AS_OF, "tools": len(TOOL_SCOPE)})
 
 
-@mcp.custom_route("/audit", methods=["GET"])
 async def audit(request: Request) -> JSONResponse:
     try:
         since = int(request.query_params.get("since", "0"))
@@ -484,17 +489,21 @@ async def audit(request: Request) -> JSONResponse:
     return JSONResponse({"epoch": AUDIT.epoch, "last_seq": AUDIT.last_seq(), "items": AUDIT.since(since)})
 
 
-@mcp.custom_route("/catalog", methods=["GET"])
 async def catalog(_: Request) -> JSONResponse:
     return JSONResponse({"server": "salesforce-mcp", "scopes": {
         s: sorted(t for t, sc in TOOL_SCOPE.items() if sc == s) for s in ("read", "team", "write")}})
 
 
-@mcp.custom_route("/admin/reset", methods=["POST"])
 async def reset(_: Request) -> JSONResponse:
     data.reset()
     AUDIT.clear()
     return JSONResponse({"ok": True, "epoch": AUDIT.epoch})
+
+
+ADMIN_ROUTES = [("/audit", audit, ["GET"]), ("/catalog", catalog, ["GET"]), ("/admin/reset", reset, ["POST"])]
+if not ADMIN_PORT:  # single-port mode (local runs, docker compose, tests)
+    for _path, _fn, _methods in ADMIN_ROUTES:
+        mcp.custom_route(_path, methods=_methods)(_fn)
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +540,16 @@ def build_app():
     return app
 
 
+def build_admin_app():
+    app = Starlette(routes=[Route(path, fn, methods=methods) for path, fn, methods in ADMIN_ROUTES])
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    return app
+
+
 app = build_app()
 
 if __name__ == "__main__":
+    if ADMIN_PORT:
+        admin = uvicorn.Server(uvicorn.Config(build_admin_app(), host="0.0.0.0", port=ADMIN_PORT, log_level="warning"))
+        threading.Thread(target=admin.run, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

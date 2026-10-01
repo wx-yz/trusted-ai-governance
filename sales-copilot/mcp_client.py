@@ -51,38 +51,67 @@ def _walk(exc: BaseException):
                 stack.append(nested)
 
 
+def _leaves(exc: BaseException) -> list[BaseException]:
+    """Every non-group exception nested in exc, in the order they are found."""
+    return [e for e in _walk(exc) if not getattr(e, "exceptions", None)]
+
+
+def _describe(e: BaseException) -> str:
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"HTTP {e.response.status_code} from {e.request.url}"
+    text = str(e).strip().splitlines()[0] if str(e).strip() else ""
+    return f"{type(e).__name__}: {text}" if text else type(e).__name__
+
+
 def classify(exc: BaseException) -> tuple[int | None, str | None, str]:
-    """Return (http status, required scope, message) for a failed MCP call."""
+    """Return (http status, required scope, root cause) for a failed MCP call.
+
+    The MCP client raises an ExceptionGroup ("unhandled errors in a TaskGroup"), which says nothing useful. The real
+    cause is nested inside, so look there: an HTTP status first, then a transport error, then anything else.
+    """
     status: int | None = None
     scope: str | None = None
-    message = ""
-    for e in _walk(exc):
+    leaves = _leaves(exc)
+    for e in leaves:
         if isinstance(e, httpx.HTTPStatusError):
             status = e.response.status_code
-            www = e.response.headers.get("www-authenticate", "")
-            m = re.search(r'scope="([^"]+)"', www)
+            m = re.search(r'scope="([^"]+)"', e.response.headers.get("www-authenticate", ""))
             if m:
                 scope = m.group(1)
-            message = message or str(e)
-        elif isinstance(e, McpError):
-            message = message or str(e)
-            m = re.search(r"\b(401|403)\b", str(e))
-            if m and status is None:
-                status = int(m.group(1))
-            elif status is None and _DENIED.search(str(e)):
-                status = 403
-        elif isinstance(e, IdentityNotReady):
-            message = str(e)
-            status = status or 401
-        elif not message and str(e):
-            message = str(e)
+            break
+    pick = (
+        next((e for e in leaves if isinstance(e, httpx.HTTPStatusError)), None)
+        or next((e for e in leaves if isinstance(e, (httpx.TransportError, OSError))), None)
+        or next((e for e in leaves if isinstance(e, (McpError, IdentityNotReady))), None)
+        or (leaves[0] if leaves else exc)
+    )
+    message = _describe(pick)
+    if isinstance(pick, IdentityNotReady):
+        status = status or 401
     if status is None:
         m = re.search(r"\b(401|403)\b", message)
         if m:
             status = int(m.group(1))
+        elif isinstance(pick, McpError) and _DENIED.search(str(pick)):
+            status = 403
         elif _DENIED.search(message):
             status = 403
-    return status, scope, message or exc.__class__.__name__
+    return status, scope, message
+
+
+def explain(status: int | None, message: str) -> str:
+    """A one-line hint for the most common reasons the Salesforce MCP server cannot be reached."""
+    low = message.lower()
+    if status == 401:
+        return "The credential was rejected. For the ungoverned agent, SF_MCP_API_KEY must equal the MCP server's 'direct' key."
+    if status == 404 or "session terminated" in low:
+        return "Nothing answers at that path. SF_MCP_URL should end in /mcp."
+    if any(k in low for k in ("name or service not known", "nodename nor servname", "getaddrinfo", "name resolution")):
+        return "The host name in SF_MCP_URL does not resolve from the agent pod."
+    if any(k in low for k in ("connecterror", "connecttimeout", "all connection attempts failed", "refused", "timed out", "timeout")):
+        return ("The agent pod cannot open a connection. Check the salesforce-mcp pod is Running and that no network policy "
+                "blocks the namespace. If it does, set SF_MCP_URL to the public tunnel URL instead.")
+    return ""
 
 
 def _compact(text: str) -> str:

@@ -91,6 +91,40 @@ def static_checks() -> None:
     check("an ordinary tool error is not classified as a denial",
           classify(RuntimeError("boom"))[0] is None)
 
+    import httpx  # noqa: E402
+    from mcp_client import explain  # noqa: E402
+    rq = httpx.Request("POST", "http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp")
+    wrapped = ExceptionGroup("unhandled errors in a TaskGroup", [httpx.ConnectError("[Errno -2] Name or service not known", request=rq)])
+    st_, _, msg = classify(wrapped)
+    check("a TaskGroup wrapper is unwrapped to the real cause", msg.startswith("ConnectError") and "TaskGroup" not in msg, msg)
+    check("a DNS failure gets a DNS hint", "does not resolve" in explain(st_, msg))
+    wrapped401 = ExceptionGroup("x", [httpx.HTTPStatusError("x", request=rq, response=httpx.Response(401, request=rq))])
+    check("a rejected key is reported as HTTP 401 with a key hint", classify(wrapped401)[0] == 401 and "SF_MCP_API_KEY" in explain(401, ""))
+
+    import importlib  # noqa: E402
+    import config as config_module  # noqa: E402
+
+    def cfg_with(**env):
+        keep = {k: v for k, v in os.environ.items() if not k.startswith(("LLM_", "OPENAI", "USE_LLM", "SF_", "AMP_"))}
+        saved = dict(os.environ)
+        os.environ.clear(); os.environ.update({**keep, "SF_MCP_URL": "http://x/mcp", "SF_MCP_API_KEY": "k", **env})
+        try:
+            importlib.reload(config_module)
+            return config_module.Config.from_env()
+        finally:
+            os.environ.clear(); os.environ.update(saved)
+
+    c = cfg_with(USE_LLM_PROVIDER="true", OPENAI_URL="http://gw/ctx", OPENAI_API_KEY="gwkey")
+    check("Console default names (OPENAI_URL / OPENAI_API_KEY) are accepted for a provider",
+          c.llm_provider_url == "http://gw/ctx" and c.llm_provider_key == "gwkey" and not c.problems())
+    c = cfg_with(USE_LLM_PROVIDER="true", LLM_PROVIDER_URL="http://gw/a", LLM_PROVIDER_KEY="k2", OPENAI_API_KEY="other")
+    check("LLM_PROVIDER_* names win when both are present", c.llm_provider_url == "http://gw/a" and c.llm_provider_key == "k2")
+    c = cfg_with(USE_LLM_PROVIDER="true", OPENAI_BASE_URL="x")
+    check("nothing injected: the message names what was looked for and what is present",
+          "were not injected" in c.problems()[0] and "OPENAI_URL" in c.problems()[0] and "OPENAI_BASE_URL" in c.problems()[0], str(c.problems()))
+    c = cfg_with(OPENAI_API_KEY="sk-raw")
+    check("without a provider the raw OPENAI_API_KEY is not mistaken for a gateway key", c.llm_provider_key == "" and not c.problems())
+
     alex = data.quota_summary(data.REPS["AM-101"])
     check("Alex closed-won is 1.695M (70.6%)", alex["closed_won_ytd"] == 1_695_000 and alex["attainment_pct"] == 70.6)
     check("Alex pipeline can cover the gap (coverage > 2x)", alex["pipeline_coverage_x"] > 2)
@@ -216,12 +250,77 @@ def e2e() -> None:
         check("/health reports ready", h["ready"] and h["salesforce_auth"] == "agentid")
         r = httpx.post(f"{mcp}/mcp", json={}, headers={"Accept": "application/json, text/event-stream"})
         check("MCP server rejects calls without a credential (401)", r.status_code == 401)
+
+        print(" when the agent cannot reach Salesforce")
+        import asyncio
+        loop = asyncio.new_event_loop()  # one loop for all calls: the HTTP client LangChain caches is bound to it
+        logging.getLogger("sales-copilot").setLevel(logging.CRITICAL)
+        os.environ.update(OPENAI_API_KEY="x", OPENAI_BASE_URL=f"http://127.0.0.1:{st.fakes}/direct/v1", SF_MCP_AUTH="apikey")
+        from agent import SalesCopilot  # noqa: E402
+        from config import Config  # noqa: E402
+
+        def ask_in_process(url: str, key: str, msg: str) -> str:
+            os.environ.update(SF_MCP_URL=url, SF_MCP_API_KEY=key)
+            return loop.run_until_complete(SalesCopilot(Config.from_env()).chat(msg, "t", None))["response"]
+
+        good = f"{mcp}/mcp"
+        out = ask_in_process(good, "wrong-key", "How am I pacing?")
+        check("a wrong key says HTTP 401 and names the fix", "HTTP 401" in out and "SF_MCP_API_KEY" in out and "TaskGroup" not in out, out)
+        out = ask_in_process(f"http://127.0.0.1:{free_port()}/mcp", "sf-direct-demo-key", "How am I pacing?")
+        check("an unreachable server says ConnectError, not TaskGroup", "ConnectError" in out and "TaskGroup" not in out, out)
+        out = ask_in_process(f"{mcp}/wrong", "sf-direct-demo-key", "How am I pacing?")
+        check("a wrong path points at the /mcp suffix", "/mcp" in out, out)
+        def ask_llm(path: str, msg: str = "How am I pacing?") -> str:
+            os.environ.update(SF_MCP_URL=good, SF_MCP_API_KEY="sf-direct-demo-key", USE_LLM_PROVIDER="true",
+                              LLM_PROVIDER_URL=f"http://127.0.0.1:{st.fakes}/{path}/v1", LLM_PROVIDER_KEY="k")
+            try:
+                return loop.run_until_complete(SalesCopilot(Config.from_env()).chat(msg, "t", None))["response"]
+            finally:
+                os.environ.pop("USE_LLM_PROVIDER", None)
+        out = ask_llm("noroute")
+        check("a gateway 404 says the provider may not be deployed", "HTTP 404" in out and "deployed" in out and "route not found" in out, out)
+        out = ask_llm("nomodel")
+        check("a missing model says so and names OPENAI_MODEL", "HTTP 404" in out and "OPENAI_MODEL" in out, out)
+        out = ask_llm("noroute", "/diagnose")
+        check("/diagnose shows the model call failure with the hint", "❌ **Model call** HTTP 404" in out and "deployed" in out, out)
+        out = ask_in_process(good, "sf-direct-demo-key", "/diagnose")
+        check("/diagnose passes every step on a healthy setup", "everything checked passed" in out and "13 tools visible" in out, out)
+        out = ask_in_process(good, "wrong-key", "/diagnose")
+        check("/diagnose pinpoints a rejected key", "problem(s) found" in out and "❌ **MCP handshake** HTTP 401" in out, out)
+    finally:
+        st.down()
+
+
+def split_port_check() -> None:
+    print("\nPublishing the MCP port without the admin port")
+    mcp, admin = free_port(), free_port()
+    st = Stack()
+    try:
+        st.start([PY, "server.py"], {"PORT": str(mcp), "SF_ADMIN_PORT": str(admin)}, ROOT / "salesforce-mcp")
+        st.wait(f"http://127.0.0.1:{mcp}/healthz")
+        st.wait(f"http://127.0.0.1:{admin}/catalog")
+        m, a = f"http://127.0.0.1:{mcp}", f"http://127.0.0.1:{admin}"
+        check("MCP port serves /healthz", httpx.get(f"{m}/healthz").status_code == 200)
+        check("MCP port does not expose the audit log", httpx.get(f"{m}/audit").status_code == 404)
+        check("MCP port does not expose reset", httpx.post(f"{m}/admin/reset").status_code == 404)
+        check("admin port serves the audit log and reset", httpx.get(f"{a}/audit").status_code == 200
+              and httpx.post(f"{a}/admin/reset").status_code == 200)
+        hdr = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "X-API-Key": "sf-gateway-demo-key"}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {"roots": {"listChanged": True}}, "clientInfo": {"name": "amp", "version": "1"}}}
+        r = httpx.post(f"{m}/mcp", json=init, headers=hdr)
+        check("Agent Manager style discovery: initialize answers plain JSON", r.status_code == 200 and r.json()["result"]["serverInfo"])
+        check("discovery: initialized notification is accepted",
+              httpx.post(f"{m}/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=hdr).status_code == 202)
+        tools = httpx.post(f"{m}/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, headers=hdr).json()["result"]["tools"]
+        check("discovery: tools/list returns tool objects with names", len(tools) == 13 and all(isinstance(t, dict) and t["name"] for t in tools))
     finally:
         st.down()
 
 
 if __name__ == "__main__":
     static_checks()
+    split_port_check()
     e2e()
     print(f"\n{'ALL CHECKS PASSED' if not failures else str(len(failures)) + ' FAILED: ' + '; '.join(failures)}")
     sys.exit(1 if failures else 0)

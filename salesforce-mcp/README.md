@@ -15,5 +15,6 @@ The server does not enforce the scopes. Agent Manager's gateway does, with Agent
 - `/mcp` needs `X-API-Key`. The key used tells the server the path: `direct` (shared integration key) or `gateway` (the MCP proxy's upstream credential). Set both with `SF_API_KEYS="direct=...,gateway=..."`.
 - Every call is written to an audit log with actor, data owners, sensitivity and a verdict (`ok`, `exposure`, `leak`, `write`). `GET /audit?since=N` feeds the dashboard.
 - `POST /admin/reset` restores the seed data and clears the log. `GET /catalog` returns the tool to scope map.
+- `SF_ADMIN_PORT=8081` moves `/audit`, `/catalog` and `/admin/reset` to their own port, so `/mcp` can be published (Agent Manager only accepts a public MCP upstream) without publishing the audit log or reset. The cluster deployment does this.
 
 The account `Tessellate Retail` carries a planted prompt-injection string in its call notes, for the indirect-injection beat.

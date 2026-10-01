@@ -24,6 +24,7 @@ Build: Python 3.12, `pip install -r requirements.txt`, start command `python mai
 
 Optional: `OPENAI_MODEL` (default `gpt-4o-mini`), `MAX_TOOL_STEPS`, `ENABLE_CORS=true` (laptop only, never on Agent Manager).
 `GET /health` reports `ready` and lists any configuration problems.
+Send the chat message `/diagnose` for a live check of DNS, TCP, the MCP handshake, the tool list, the AgentID token and the model call.
 
 ## Run locally
 

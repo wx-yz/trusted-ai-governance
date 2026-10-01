@@ -180,6 +180,19 @@ async def llm_direct(request: Request) -> JSONResponse:
     return JSONResponse(completion(scripted_model(body["messages"])))
 
 
+async def llm_no_route(_: Request) -> Response:
+    return Response('{"message":"route not found"}', status_code=404, media_type="application/json")
+
+
+async def llm_model_missing(_: Request) -> JSONResponse:
+    return JSONResponse({"error": {"message": "The model `gpt-x` does not exist or you do not have access to it.",
+                                   "type": "invalid_request_error", "code": "model_not_found"}}, status_code=404)
+
+
+async def llm_root(_: Request) -> JSONResponse:
+    return JSONResponse({"error": "missing model"}, status_code=400)
+
+
 async def health(_: Request) -> JSONResponse:
     return JSONResponse({"ok": True, **{k: v for k, v in STATE.items() if k != "catalog"}})
 
@@ -189,6 +202,9 @@ app = Starlette(routes=[
     Route("/salesforce/mcp", mcp_proxy, methods=["GET", "POST", "DELETE"]),
     Route("/llm/v1/chat/completions", llm_governed, methods=["POST"]),
     Route("/direct/v1/chat/completions", llm_direct, methods=["POST"]),
+    Route("/chat/completions", llm_root, methods=["POST"]),
+    Route("/noroute/v1/chat/completions", llm_no_route, methods=["POST"]),
+    Route("/nomodel/v1/chat/completions", llm_model_missing, methods=["POST"]),
     Route("/fake/role/{role}", set_role, methods=["POST"]),
     Route("/fake/health", health),
 ])
