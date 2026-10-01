@@ -17,7 +17,7 @@ This page takes you from an empty checkout to a working demo in steps 0 to 7. Th
 - [Step 5. Finish in the Agent Manager Console](#step-5-finish-in-the-agent-manager-console)
 - [Step 6. Connect the demo UI](#step-6-connect-the-demo-ui)
 - [Step 7. Smoke test](#step-7-smoke-test)
-- [Every time you run the demo](#every-time-you-run-the-demo) · [Troubleshooting](#troubleshooting) · [Clean up](#clean-up) · [Reference](#reference)
+- [Every time you run the demo](#every-time-you-run-the-demo) · [Fixed tunnel URL](#optional-a-tunnel-url-that-never-changes) · [Troubleshooting](#troubleshooting) · [Clean up](#clean-up) · [Reference](#reference)
 
 ## How it fits together
 
@@ -101,17 +101,19 @@ Open **terminal 2** and start the tunnel. **Leave it running for the whole demo.
 ./deploy/expose-mcp.sh
 ```
 
-It port-forwards the server, starts a `cloudflared` tunnel to the MCP port only, and prints something like:
+It port-forwards the audit feed (`localhost:8090`) and the demo UI (`localhost:3000`) from the cluster, starts a `cloudflared` tunnel to the MCP port only, and prints something like:
 
 ```
   export MCP_PUBLIC_URL=https://quiet-river-1234.trycloudflare.com/mcp
 ```
 
-Copy that line. It also opens the private audit port on `localhost:8090`, which the dashboard reads.
+Copy that line. Each port-forward reconnects by itself if its pod is replaced (a plain `kubectl port-forward` silently dies when `deploy-mcp.sh` runs again), so this one terminal keeps everything running.
 
 > **Checkpoint:** in terminal 1, `curl https://quiet-river-1234.trycloudflare.com/healthz` returns `{"status":"ok",…}` (use your own host), and `curl -i http://localhost:8090/audit` returns `200`.
 
 Only `/mcp` and `/healthz` are published, and `/mcp` needs the API key. The audit and reset endpoints stay on the private port.
+
+A quick tunnel gets a **new URL every time this script starts**. If you restart it, the script prints a warning with the old and new URL, and you must update the proxy endpoint and the ungoverned agent's `SF_MCP_URL` (see Troubleshooting). Avoid restarting it between your setup and the demo.
 
 ## Step 4. Configure Agent Manager with the script
 
@@ -185,13 +187,9 @@ Also copy each agent's invoke URL from its **Deploy** page (environment card). I
 
 ## Step 6. Connect the demo UI
 
-In **terminal 1**:
+`expose-mcp.sh` (step 3) already serves the UI. Open <http://localhost:3000>. If you would rather serve it from your laptop, skip the cluster copy: `cd governance-console && python3 -m http.server 3000` (the script notices and leaves port 3000 alone).
 
-```bash
-kubectl -n sales-demo port-forward svc/governance-console 3000:80 &
-```
-
-Open <http://localhost:3000>. Click the **⚙** icon and fill in:
+Click the **⚙** icon and fill in:
 
 | Field | Value |
 |---|---|
@@ -233,10 +231,27 @@ Wait for the build to show **Completed** before you deploy.
 
 ## Every time you run the demo
 
-1. Keep terminal 2 (`expose-mcp.sh`) running. If you restarted it, the tunnel URL changed, see the troubleshooting row below.
-2. Make sure the console port-forward is running (`kubectl -n sales-demo port-forward svc/governance-console 3000:80 &`).
+1. Keep terminal 2 (`expose-mcp.sh`) running: it serves the UI, the audit feed and the tunnel. If you restarted it, the tunnel URL changed, see the troubleshooting row below.
+2. Check <http://localhost:3000> loads and the dashboard shows the green *audit feed · live* dot.
 3. Open <http://localhost:3000>, press **↺** to reset the data, chat and dashboard, and start with Governance OFF.
 4. **Pop out** on the dashboard opens it in its own window for a second screen.
+
+## Optional: a tunnel URL that never changes
+
+A quick tunnel gets a new name every time `expose-mcp.sh` starts, and you then have to update the proxy and the ungoverned agent. With a fixed address you set it once. The free ngrok plan includes one static domain:
+
+```bash
+# once: create a free ngrok account, copy its authtoken, claim your free static domain in the ngrok dashboard
+ngrok config add-authtoken <token>
+
+# terminal 2a: your fixed address forwards to the MCP port (older ngrok versions use --domain instead of --url)
+ngrok http --url=<your-domain>.ngrok-free.app 18080
+
+# terminal 2b: same script, without starting a quick tunnel
+OWN_TUNNEL_URL=https://<your-domain>.ngrok-free.app ./deploy/expose-mcp.sh
+```
+
+Use `https://<your-domain>.ngrok-free.app/mcp` as `MCP_PUBLIC_URL` in step 4. Any tunnel or public host that forwards to `localhost:18080` works the same way. Only forward port 18080, never 8090: that one is the private audit and reset port. This path has not been tested against a real ngrok account.
 
 ## Troubleshooting
 
@@ -247,16 +262,19 @@ Wait for the build to show **Completed** before you deploy.
 | *I am not fully configured yet: USE_LLM_PROVIDER is true but … was not injected* | The agent has no LLM provider variables. The message lists which related variables it does see. If you added the LLM configuration in the Console, it names them `OPENAI_URL` and `OPENAI_API_KEY` by default, which the agent now also accepts after a rebuild. Otherwise open the agent's **Configure › LLM Configurations**, set the variable names to `LLM_PROVIDER_URL` and `LLM_PROVIDER_KEY`, and save (a deployed agent picks the change up without a rebuild). Make sure the agent shows **Active** and has been redeployed after attaching the provider. |
 | *The model request failed (HTTP 404)* | Export your OpenAI key and run `./deploy/test-llm-provider.sh`. An agent does not call the provider directly: attaching the provider to an agent creates a per-agent LLM proxy with a random `/<uuid>` path, and `LLM_PROVIDER_URL` points at that proxy. The script lists those proxies and checks that each has a live route on the gateway, asks OpenAI directly whether your key can use the model, and names the case: **model not available to the key** (set `OPENAI_MODEL` on both agents and redeploy), **proxy has no live route** (it prints the command that deploys it), **no proxy at all** (remove and re-add the LLM configuration on the agent), or **routes fine, problem in the agent** (rebuild it and send `/diagnose`). |
 | *I could not reach Salesforce: HTTP 401* | A key does not match the cluster's. This happens if the keys were rotated (or `deploy-mcp.sh` re-run after deleting the secret) after the agents and proxy were created. Read the current keys with `kubectl -n sales-demo get secret salesforce-mcp-keys -o jsonpath='{.data.SF_API_KEYS}' \| base64 --decode`, then update **both places**: the ungoverned agent's secret `SF_MCP_API_KEY` = the `direct` value (agent, **Deploy › Configure**, then redeploy), and the MCP proxy's upstream header `X-API-Key` = the `gateway` value (**MCP Servers › Salesforce MCP › Connection**). `/diagnose` prints the first four characters of the key the agent holds, to compare. |
-| *I could not reach Salesforce: ConnectError* or a timeout | The agent pod cannot open a connection to `SF_MCP_URL`. Check `kubectl -n sales-demo get pods`, and `kubectl -n sales-demo logs deploy/salesforce-mcp --tail=20`: if no request ever arrives, a network policy is likely blocking traffic into the `sales-demo` namespace. Set `SF_MCP_URL` on the ungoverned agent to the public tunnel URL (`MCP_PUBLIC_URL`) and redeploy. |
-| *I could not reach Salesforce: … does not resolve* | The host in `SF_MCP_URL` is wrong. The in-cluster form is `http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp`. |
+| *I could not reach Salesforce: ConnectError* or a timeout | The agent pod cannot open a connection to its `SF_MCP_URL`. By default that is the tunnel URL, so check `./deploy/expose-mcp.sh` is still running and the URL has not changed. If you pointed the ungoverned agent at the in-cluster service URL, a network policy probably blocks calls into the `sales-demo` namespace: set `SF_MCP_URL` back to the tunnel URL (agent, **Deploy › Configure**, redeploy). `kubectl -n sales-demo logs deploy/salesforce-mcp --tail=20` shows whether any request arrived. |
+| *I could not reach Salesforce: ConnectError: Name or service not known* | The host in `SF_MCP_URL` does not resolve. If it is a `….trycloudflare.com` name, the tunnel it belonged to has stopped: a quick tunnel's name disappears when `cloudflared` stops, and a restart gives a new one. Check from your laptop: `curl -s https://<that host>/healthz` fails with *could not resolve host*. Take the current URL from the terminal running `./deploy/expose-mcp.sh` (it is also saved in `deploy/.last-mcp-url`), then update it in **both** places: `SF_MCP_URL` on the ungoverned agent (redeploy) and the Salesforce MCP proxy endpoint (Console, **MCP Servers › Salesforce MCP › Manage Endpoints**). The governed agent fails too until the proxy is updated. To stop this recurring, use a fixed URL (next section). |
 | `url host resolves to a non-public IP address` | The MCP proxy upstream must be public. Do step 3 and use its `MCP_PUBLIC_URL`. |
 | `Only GitHub repositories are supported` | `REPO_URL` must be `https://github.com/<owner>/<repo>`. |
-| The tunnel URL changed after a restart | Quick tunnels get a new URL every time. In the Console, **MCP Servers › Salesforce MCP › Manage Endpoints**, edit the endpoint URL to the new `MCP_PUBLIC_URL`, and save. |
+| The tunnel URL changed after a restart | Quick tunnels get a new URL every time. Update it in **two** places: the endpoint URL of the `Salesforce MCP` proxy (Console, **MCP Servers › Salesforce MCP › Manage Endpoints**) and `SF_MCP_URL` on the ungoverned agent (**Deploy › Configure**, then redeploy). |
 | `Invalid request body` creating the proxy | Tools must be the objects returned by discovery, not names. Use the script, it does this. |
 | Script says it could not assign the role | Console: **Agent Identities › Roles › sales-am-assistant**, add agent `sales-copilot`. |
 | Chat says the agent is not configured | Governed agent: finish step 5b and redeploy, and wait for AgentID to provision. Check the agent's logs. |
-| Dashboard shows *audit feed offline* | `expose-mcp.sh` is not running (it owns the `localhost:8090` port-forward), or the ⚙ audit URL is wrong. |
-| Browser cannot reach an agent | Use the invoke URL ending in `/chat` and the key from **Credentials**. Leave CORS on (the default). |
+| The demo UI at `localhost:3000` does not load | Its port-forward died. A plain `kubectl port-forward` is tied to one pod and silently stops when the pod is replaced, for example after `deploy-mcp.sh` runs again. Start `./deploy/expose-mcp.sh` again: it now reconnects by itself. The quickest alternative needs no cluster: `cd governance-console && python3 -m http.server 3000`. |
+| Dashboard shows *audit feed offline* | `localhost:8090` is a port-forward that `expose-mcp.sh` opens. Start it again (Ctrl+C the old one first): the script now checks that the Service exposes the admin port 8081, clears port-forwards left from an earlier run, and prints kubectl's own error if 8090 or 18080 cannot be opened. By hand: `curl -i http://localhost:8090/catalog` must return 200, `lsof -nP -iTCP:8090 -sTCP:LISTEN` shows what holds the port, and `kubectl -n sales-demo get svc salesforce-mcp -o jsonpath='{.spec.ports[*].port}'` must print `8080 8081` (if it prints only `8080`, re-run `./deploy/deploy-mcp.sh`). The ⚙ audit URL must be `http://localhost:8090`. |
+| Browser console: `Cross-Origin Request Blocked … CORS header missing … Status code: 401` | Not a CORS problem. The gateway answered **401** (the agent's API key is wrong, missing or expired), and its 401 carries no CORS headers, so the browser reports CORS and hides the status. Each agent has its **own** key (agent, **Credentials**, **Create API Key**, copied when created) and each is pasted under ⚙ for its own lane. Settings now warns about a missing key, the same key on both agents, or the same URL. Confirm with `curl -i -X POST '<agent chat url>' -H 'Content-Type: application/json' -H 'X-API-Key: <key>' -d '{"message":"hi"}'`: 200 means the key works, 401 means it does not. The chat error bubble shows this command with your URL filled in. |
+| Browser console: `Request for font "…" blocked at visibility level 2` | Harmless. Firefox's fingerprinting protection blocking a system font lookup. Nothing to fix. |
+| Browser cannot reach an agent (no 401, a real network error) | Use the agent's invoke URL ending in `/chat`, and leave CORS on (the default). Check the agent shows **Active**, and that `*.am-gateway.localhost` resolves (it does on macOS). |
 | Own-data questions also return 403 | The role lacks `salesforce:read`, or the agent was created before the scopes existed. Regenerate its AgentID credential (agent page, *Agent ID*) and restart it. |
 | Governed agent still leaks | `sales-am-assistant` is not assigned to it, or it holds a wider role. Fix and restart the agent, tokens are cached until they expire. |
 | `get_my_*` fails with *No signed-in account manager* | The gateway dropped the `X-Acting-User` header. The audit shows `acting_user: null`. |
@@ -289,7 +307,7 @@ Then delete in the Console: the two agents, the `shared-openai` provider, the `s
 | `PROVIDER` | `shared-openai` | LLM provider handle |
 | `GATEWAY` | picked automatically | Gateway name or UUID to deploy the provider to. Set it if the environment has more than one gateway |
 | `ENV_UUID` | looked up | Set it if the script cannot find the environment |
-| `MCP_DIRECT_URL` | in-cluster service URL | What the ungoverned agent calls, bypassing the gateway |
+| `MCP_DIRECT_URL` | same as `MCP_PUBLIC_URL` | What the ungoverned agent calls, bypassing the gateway. Set the in-cluster service URL here only if agent pods can reach that namespace |
 | `GOVERNED`, `UNGOVERNED` | `sales-copilot`, `sales-copilot-ungoverned` | Agent names |
 | `GATEWAY_KEY`, `DIRECT_KEY` | read from the cluster secret | The two MCP server keys |
 
@@ -298,7 +316,7 @@ Then delete in the Console: the two agents, the `shared-openai` provider, the `s
 | Variable | Ungoverned | Governed |
 |---|---|---|
 | `AGENT_NAME` | `sales-copilot-ungoverned` | `sales-copilot` |
-| `SF_MCP_URL` | in-cluster MCP URL | injected by the tool configuration (step 5b) |
+| `SF_MCP_URL` | the published MCP URL (`MCP_PUBLIC_URL`) | injected by the tool configuration (step 5b) |
 | `SF_MCP_AUTH` | `apikey` | `agentid` |
 | `SF_MCP_API_KEY` (secret) | shared Salesforce key | not set |
 | `OPENAI_API_KEY` (secret) | raw OpenAI key | not set |
@@ -318,7 +336,7 @@ More in [`sales-copilot/README.md`](sales-copilot/README.md) and [`salesforce-mc
 
 ### What was tested
 
-- The MCP server, both agents, the console and the dashboard run end to end on a laptop against stand-ins for the gateway behaviour (`python tests/test_demo.py`, 65 checks).
+- The MCP server, both agents, the console and the dashboard run end to end on a laptop against stand-ins for the gateway behaviour (`python tests/test_demo.py`, 67 checks).
 - The setup script ran against a stand-in `amctl` that enforces the rules found in the Agent Manager source (public upstreams only, tool objects, scope validation).
 - Not run by the author: the guardrails and tool configuration on a real Agent Manager, and the agent against a real OpenAI model.
 

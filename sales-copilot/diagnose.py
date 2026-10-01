@@ -59,7 +59,7 @@ async def run(cfg: Config, identity: AgentIdentity, mcp: SalesforceMcp, build_ll
             infos = await asyncio.wait_for(loop.getaddrinfo(url.hostname, port, type=socket.SOCK_STREAM), 5)
             ok("DNS", f"`{url.hostname}` resolves to {', '.join(sorted({i[4][0] for i in infos}))}")
         except Exception as exc:  # noqa: BLE001
-            bad("DNS", f"`{url.hostname}` did not resolve ({type(exc).__name__})", explain(None, "getaddrinfo"))
+            bad("DNS", f"`{url.hostname}` did not resolve ({type(exc).__name__})", explain(None, "getaddrinfo", cfg.sf_mcp_url))
         else:
             try:
                 t0 = time.time()
@@ -67,7 +67,7 @@ async def run(cfg: Config, identity: AgentIdentity, mcp: SalesforceMcp, build_ll
                 writer.close()
                 ok("TCP", f"connected to port {port} in {int((time.time() - t0) * 1000)} ms")
             except Exception as exc:  # noqa: BLE001
-                bad("TCP", f"could not connect to `{url.hostname}:{port}` ({type(exc).__name__})", explain(None, "connecterror"))
+                bad("TCP", f"could not connect to `{url.hostname}:{port}` ({type(exc).__name__})", explain(None, "connecterror", cfg.sf_mcp_url))
 
     if cfg.sf_mcp_url:
         try:
@@ -83,7 +83,7 @@ async def run(cfg: Config, identity: AgentIdentity, mcp: SalesforceMcp, build_ll
                 bad("MCP handshake", f"HTTP {resp.status_code}: {resp.text[:140]!r}", explain(resp.status_code, ""))
         except Exception as exc:  # noqa: BLE001
             status, _, msg = classify(exc)
-            bad("MCP handshake", msg, explain(status, msg))
+            bad("MCP handshake", msg, explain(status, msg, cfg.sf_mcp_url))
         try:
             tools = await mcp.list_tools(None, uuid.uuid4().hex[:12])
             ok("Tool list", f"{len(tools)} tools visible")
@@ -91,7 +91,7 @@ async def run(cfg: Config, identity: AgentIdentity, mcp: SalesforceMcp, build_ll
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             status, _, msg = classify(exc)
-            bad("Tool list", msg, explain(status, msg))
+            bad("Tool list", msg, explain(status, msg, cfg.sf_mcp_url))
 
     if cfg.sf_mcp_auth == "agentid":
         try:

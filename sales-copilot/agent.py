@@ -148,7 +148,7 @@ class SalesCopilot:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             status, _, msg = classify(exc)
-            hint = explain(status, msg)
+            hint = explain(status, msg, cfg.sf_mcp_url)
             log.warning("tools/list against %s failed: %s", cfg.sf_mcp_url, msg, exc_info=exc)
             rec.add("tool_error", tool="tools/list", detail=msg)
             return finish(f"I could not reach Salesforce: {msg}." + (f" {hint}" if hint else "")

@@ -81,6 +81,19 @@
     el.chips.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => send(PROMPTS[+b.dataset.i].t)));
   }
 
+  // The browser reports a CORS error whenever a response carries no CORS headers, and the gateway's own 401 is
+  // exactly such a response. So a CORS error here nearly always means "the API key was refused".
+  function connectionHelp(L, url, key, browserSaid) {
+    const other = L === "governed" ? "ungoverned" : "governed";
+    let note = "";
+    if (!key) note = "\n\n**No API key is set for this agent** in ⚙ Settings. API key security is on by default, so the gateway answers 401.";
+    else if (key === (cfg[other].api_key || "")) note = `\n\n**The ${L} and ${other} agents have the same key.** Each agent has its own key (agent, *Credentials*, *Create API Key*).`;
+    return `**The browser could not read the ${L} agent's response.** This almost always means the gateway answered **401**: the API key is wrong, missing or expired. A 401 from the gateway carries no CORS headers, so the browser reports a CORS error and hides the real status.${note}\n\n` +
+      `Check this agent's key in ⚙ Settings. To see the real status:\n\n` +
+      "```\ncurl -i -X POST '" + url + "' -H 'Content-Type: application/json' -H 'X-API-Key: <the key>' -d '{\"message\":\"hi\"}'\n```\n\n" +
+      `200 means the key works, 401 means it does not. If curl works but the browser does not, check that the URL is the agent's invoke URL ending in /chat and that CORS is enabled on the agent. (Browser said: ${browserSaid})`;
+  }
+
   async function send(text) {
     text = (text || "").trim();
     if (!text || busy) return;
@@ -115,7 +128,7 @@
       }
     } catch (e) {
       list.pop();
-      list.push({ role: "bot", error: true, text: `Could not reach the agent at \`${url}\`. Check the URL, that the agent is running, and that CORS is enabled. (${e.message})` });
+      list.push({ role: "bot", error: true, text: connectionHelp(L, url, target.api_key, e.message) });
       G.emit({ kind: "turn", lane: L, prompt: text, ok: false, status: 0 });
     }
     busy = false; el.send.disabled = false; render(); el.input.focus();
@@ -126,9 +139,21 @@
     $("gUrl").value = cfg.governed.url || ""; $("gKey").value = cfg.governed.api_key || "";
     $("uUrl").value = cfg.ungoverned.url || ""; $("uKey").value = cfg.ungoverned.api_key || "";
     $("aUrl").value = cfg.audit_url || "";
+    checkSettings();
     $("drawer").classList.add("open");
   }
   function closeSettings() { $("drawer").classList.remove("open"); }
+  function checkSettings() {
+    const g = { url: $("gUrl").value.trim(), key: $("gKey").value.trim() }, u = { url: $("uUrl").value.trim(), key: $("uKey").value.trim() };
+    const w = [];
+    if (g.url && !g.key) w.push("The governed agent has a URL but no API key. The gateway will answer 401.");
+    if (u.url && !u.key) w.push("The ungoverned agent has a URL but no API key. The gateway will answer 401.");
+    if (g.key && g.key === u.key) w.push("Both agents have the same API key. Each agent has its own key.");
+    if (g.url && g.url === u.url) w.push("Both agents have the same URL. They are two different agents.");
+    const box = $("cfgWarn");
+    box.hidden = !w.length; box.innerHTML = w.map((x) => "⚠ " + G.esc(x)).join("<br>");
+  }
+  ["gUrl", "gKey", "uUrl", "uKey"].forEach((id) => $(id).addEventListener("input", checkSettings));
 
   async function loadCatalog() {
     try {

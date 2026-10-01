@@ -32,12 +32,8 @@ kubectl -n "$NS" rollout status deploy/governance-console --timeout=120s
 
 cat <<MSG
 
-Done.
-  Ungoverned agent reaches MCP in-cluster: http://salesforce-mcp.$NS.svc.cluster.local:8080/mcp
+Done. (In-cluster URL, only if you set MCP_DIRECT_URL yourself: http://salesforce-mcp.$NS.svc.cluster.local:8080/mcp)
 
 Agent Manager only accepts a PUBLIC upstream URL for an MCP proxy, so publish the MCP port next:
-  ./deploy/expose-mcp.sh          (keep it running, it also opens the dashboard's audit port on localhost:8090)
-Then open the demo UI:
-  kubectl -n $NS port-forward svc/governance-console 3000:80 &
-  open http://localhost:3000
+  ./deploy/expose-mcp.sh          (keep it running: it also serves the demo UI on localhost:3000 and the audit feed on localhost:8090)
 MSG

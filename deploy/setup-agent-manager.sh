@@ -19,7 +19,11 @@ ORG="${ORG:-default}"
 ENVIRONMENT="${ENVIRONMENT:-default}"
 PROJECT="${PROJECT:-sales-demo}"
 PROVIDER="${PROVIDER:-shared-openai}"
-MCP_DIRECT_URL="${MCP_DIRECT_URL:-http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp}"  # ungoverned agent, in-cluster
+# The ungoverned agent calls the MCP server directly, with the shared key and no gateway. It uses the same published
+# endpoint by default: agent pods run under a network policy that may not allow calls into other namespaces, while
+# internet egress is open (the ungoverned agent needs it for OpenAI anyway). To use the in-cluster service instead:
+#   MCP_DIRECT_URL=http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp
+MCP_DIRECT_URL="${MCP_DIRECT_URL:-$MCP_PUBLIC_URL}"
 GOVERNED="${GOVERNED:-sales-copilot}"
 UNGOVERNED="${UNGOVERNED:-sales-copilot-ungoverned}"
 

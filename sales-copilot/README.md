@@ -14,7 +14,7 @@ Build: Python 3.12, `pip install -r requirements.txt`, start command `python mai
 | Variable | Ungoverned | Governed |
 |---|---|---|
 | `AGENT_NAME` | `sales-copilot-ungoverned` | `sales-copilot` |
-| `SF_MCP_URL` | in-cluster MCP server URL | injected by the *Tool Configuration* (name it `SF_MCP_URL`) |
+| `SF_MCP_URL` | the published MCP URL (the tunnel) | injected by the *Tool Configuration* (name it `SF_MCP_URL`) |
 | `SF_MCP_AUTH` | `apikey` | `agentid` |
 | `SF_MCP_API_KEY` (secret) | shared Salesforce key | not set |
 | `OPENAI_API_KEY` (secret) | raw OpenAI key | not set |

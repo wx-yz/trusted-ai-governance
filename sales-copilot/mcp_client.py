@@ -99,9 +99,14 @@ def classify(exc: BaseException) -> tuple[int | None, str | None, str]:
     return status, scope, message
 
 
-def explain(status: int | None, message: str) -> str:
+def explain(status: int | None, message: str, url: str = "") -> str:
     """A one-line hint for the most common reasons the Salesforce MCP server cannot be reached."""
     low = message.lower()
+    dns_failed = any(k in low for k in ("name or service not known", "nodename nor servname", "getaddrinfo", "name resolution"))
+    if dns_failed and "trycloudflare.com" in url:
+        return ("That is a quick-tunnel name, and it stops resolving when the tunnel stops or restarts. The tunnel URL has "
+                "probably changed: take the current one from ./deploy/expose-mcp.sh (it also saves it in deploy/.last-mcp-url) "
+                "and update SF_MCP_URL on this agent, then redeploy. For a URL that never changes, see the README section on a stable URL.")
     if status == 401:
         return "The credential was rejected. For the ungoverned agent, SF_MCP_API_KEY must equal the MCP server's 'direct' key."
     if status == 404 or "session terminated" in low:
@@ -109,8 +114,9 @@ def explain(status: int | None, message: str) -> str:
     if any(k in low for k in ("name or service not known", "nodename nor servname", "getaddrinfo", "name resolution")):
         return "The host name in SF_MCP_URL does not resolve from the agent pod."
     if any(k in low for k in ("connecterror", "connecttimeout", "all connection attempts failed", "refused", "timed out", "timeout")):
-        return ("The agent pod cannot open a connection. Check the salesforce-mcp pod is Running and that no network policy "
-                "blocks the namespace. If it does, set SF_MCP_URL to the public tunnel URL instead.")
+        return ("The agent pod cannot open a connection to SF_MCP_URL. If it is the in-cluster service URL, a network policy "
+                "probably blocks calls into that namespace: set SF_MCP_URL to the public tunnel URL. If it already is the "
+                "tunnel URL, check that deploy/expose-mcp.sh is still running and that the URL has not changed.")
     return ""
 
 

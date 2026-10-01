@@ -98,6 +98,10 @@ def static_checks() -> None:
     st_, _, msg = classify(wrapped)
     check("a TaskGroup wrapper is unwrapped to the real cause", msg.startswith("ConnectError") and "TaskGroup" not in msg, msg)
     check("a DNS failure gets a DNS hint", "does not resolve" in explain(st_, msg))
+    check("a DNS failure on a quick-tunnel host says the tunnel URL probably changed",
+          "quick-tunnel" in explain(st_, msg, "https://complicated-convergence-origin-bit.trycloudflare.com/mcp"))
+    check("a DNS failure on another host does not blame the tunnel",
+          "quick-tunnel" not in explain(st_, msg, "http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp"))
     wrapped401 = ExceptionGroup("x", [httpx.HTTPStatusError("x", request=rq, response=httpx.Response(401, request=rq))])
     check("a rejected key is reported as HTTP 401 with a key hint", classify(wrapped401)[0] == 401 and "SF_MCP_API_KEY" in explain(401, ""))
 
