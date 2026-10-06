@@ -6,6 +6,21 @@ cd "$(dirname "$0")/.."
 CLUSTER="${CLUSTER:-amp-local}"
 NS=support-demo
 
+# kubectl must reach the cluster before anything is built. A cluster that was recreated keeps its name but gets a new
+# certificate authority, and the old kubeconfig then fails with "x509: certificate signed by unknown authority".
+if ! KERR="$(kubectl --context "k3d-$CLUSTER" get namespace default -o name 2>&1)"; then
+  echo "kubectl cannot reach the k3d cluster '$CLUSTER': $KERR"
+  case "$KERR" in
+    *x509*|*certificate*|*"context was not found"*|*"no context exists"*)
+      echo "The kubeconfig entry for '$CLUSTER' is stale or missing (the cluster was probably recreated). Refresh it with:"
+      echo "  k3d kubeconfig merge $CLUSTER --kubeconfig-merge-default --kubeconfig-switch-context"
+      echo "then check: kubectl get nodes" ;;
+    *) echo "Check: k3d cluster list, and kubectl config current-context (should be k3d-$CLUSTER)." ;;
+  esac
+  exit 1
+fi
+kubectl config use-context "k3d-$CLUSTER" >/dev/null
+
 echo "==> Building images"
 docker build -t commerce-mcp:demo commerce-mcp
 docker build -t governance-console:demo governance-console
