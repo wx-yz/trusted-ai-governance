@@ -58,6 +58,7 @@ if [[ "$MCP_PUBLIC_URL" != http*://* ]] || [[ "$host" =~ ^(localhost|127\.|10\.|
 fi
 
 # ---- keys: read the ones deploy-mcp.sh generated, fall back to the docker-compose defaults
+KUBE_ERR="$(kubectl -n support-demo get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' 2>&1 >/dev/null || true)"
 KEYS="$(kubectl -n support-demo get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
 pick() { tr ',' '\n' <<<"$KEYS" | sed -n "s/^$1=//p" | head -1; }
 GATEWAY_KEY="${GATEWAY_KEY:-$(pick gateway)}"; GATEWAY_KEY="${GATEWAY_KEY:-commerce-gateway-demo-key}"   # attached by the MCP proxy
@@ -65,8 +66,30 @@ DIRECT_KEY="${DIRECT_KEY:-$(pick direct)}";    DIRECT_KEY="${DIRECT_KEY:-commerc
 echo "repo:      $REPO_URL ($REPO_BRANCH) path $APP_PATH"
 echo "MCP proxy: $MCP_PUBLIC_URL"
 echo "MCP direct (ungoverned agent): $MCP_DIRECT_URL"
-echo "keys:      direct starts ${DIRECT_KEY:0:4}... (held by the ungoverned agent), gateway starts ${GATEWAY_KEY:0:4}... (attached by the MCP proxy)"
-[ "$DIRECT_KEY" = "commerce-direct-demo-key" ] && echo "  note: these are the built-in demo keys. If the cluster has random keys, re-run with the secret readable by kubectl."
+if [ -n "$KEYS" ]; then
+  echo "keys:      read from the cluster secret commerce-mcp-keys. direct starts ${DIRECT_KEY:0:4}... (held by the ungoverned agent), gateway starts ${GATEWAY_KEY:0:4}... (attached by the MCP proxy)"
+else
+  echo "keys:      could not read the cluster secret support-demo/commerce-mcp-keys (kubectl said: ${KUBE_ERR:-nothing}). Using the built-in docker-compose demo keys."
+fi
+
+# ---- preflight: the gateway key must open the published MCP endpoint, or the proxy will be created with a dead credential.
+# A real MCP initialize call, exactly what Agent Manager does during discovery.
+INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"setup-script","version":"1"}}}'
+CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "$MCP_PUBLIC_URL" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' -H "X-API-Key: $GATEWAY_KEY" -d "$INIT" || echo 000)"
+case "$CODE" in
+  200) echo "preflight: the gateway key opens $MCP_PUBLIC_URL (HTTP 200)" ;;
+  401) die "The gateway key does not open $MCP_PUBLIC_URL (HTTP 401). The MCP server in the cluster runs with the random keys that deploy/deploy-mcp.sh generated, and this shell could not read them (kubectl said: ${KUBE_ERR:-nothing}).
+  Fix one of these, then re-run:
+    a) point kubectl at the cluster that runs the MCP server (kubectl config use-context k3d-amp-local; kubectl -n support-demo get secret commerce-mcp-keys)
+    b) read the keys where kubectl works and pass them in:
+         KEYS=\$(kubectl -n support-demo get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' | base64 --decode)
+         export GATEWAY_KEY=\${KEYS##*gateway=}; export DIRECT_KEY=\$(sed -n 's/.*direct=\([^,]*\).*/\1/p' <<<\"\$KEYS\")
+    c) or make the cluster use the demo keys: kubectl -n support-demo delete secret commerce-mcp-keys && kubectl -n support-demo create secret generic commerce-mcp-keys --from-literal=COMMERCE_API_KEYS='direct=commerce-direct-demo-key,gateway=commerce-gateway-demo-key' && kubectl -n support-demo rollout restart deploy/commerce-mcp
+  If the proxy '$PROXY' was already created with the wrong key, fix it in the Console: MCP Servers > Orders & Payments > Connection, header X-API-Key." ;;
+  000) die "Nothing answered at $MCP_PUBLIC_URL (connection failed or timed out). Is ./deploy/expose-mcp.sh still running, and is this its current URL?" ;;
+  *)   echo "preflight: unexpected HTTP $CODE from $MCP_PUBLIC_URL, continuing (discovery will show the real error)" ;;
+esac
 
 say "Project '$PROJECT'"
 soft amctl project create "$PROJECT" --display-name "Customer Support Demo" --description "Trusted AI governance demo: refund agent"
