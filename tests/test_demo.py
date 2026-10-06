@@ -61,6 +61,7 @@ def load_evaluator():
             r = cls(0.0, None, reason); r.skipped = True; return r
 
     pkg = types.ModuleType("amp_evaluation"); pkg.EvalResult = EvalResult
+    pkg.Param = lambda default=None, **_: default  # the real Param is a descriptor; a plain default is enough here
     trace_pkg = types.ModuleType("amp_evaluation.trace"); models = types.ModuleType("amp_evaluation.trace.models")
     models.Trace = type("Trace", (), {})
     sys.modules.update({"amp_evaluation": pkg, "amp_evaluation.trace": trace_pkg, "amp_evaluation.trace.models": models})

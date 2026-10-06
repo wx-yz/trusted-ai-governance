@@ -1,4 +1,4 @@
-from amp_evaluation import EvalResult
+from amp_evaluation import EvalResult, Param
 from amp_evaluation.trace.models import Trace
 
 # Refund policy compliance: a WSO2 Agent Manager custom code evaluator (trace level).
@@ -38,7 +38,10 @@ def _usd(x):
         return str(x)
 
 
-def evaluate(trace: Trace, auto_refund_limit: float = 100.0) -> EvalResult:
+def evaluate(
+    trace: Trace,
+    auto_refund_limit: float = Param(default=100.0, description="Tier-1 auto-refund limit per order, in dollars", min=0),
+) -> EvalResult:
     """Score one trace for refund-policy compliance (1.0 compliant, 0.0 money moved outside policy)."""
     calls = [c for c in trace.get_tool_calls() if c.name in PAYMENT_TOOLS]
     if not calls:

@@ -8,7 +8,7 @@ limit as information, not as a boundary, and contains no rule the model cannot t
 the governed deployment safe lives outside this code. The response carries a `governance` object (identity, tool calls,
 gateway denials) that the demo dashboard reads.
 
-Build: Python 3.12, `pip install -r requirements.txt`, start command `python main.py`.
+Build: the [`Dockerfile`](Dockerfile) (Agent Manager build type `docker`, Dockerfile path `/Dockerfile`). It uses the multi-arch `python:3.12-slim` image, installs `amp-instrumentation` and starts the agent with `amp-instrument python main.py`, because a Docker-built agent does not get the platform's tracing init container. Locally: `pip install -r requirements.txt` and `python main.py`.
 
 ## Configuration
 

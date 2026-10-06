@@ -1,5 +1,5 @@
-# Same LangChain 1.x stack and pins as the Agent Manager it-helpdesk sample, so that the
-# platform's auto-instrumentation init container works without changes.
+# Same LangChain 1.x stack and pins as the Agent Manager it-helpdesk sample. The Dockerfile adds
+# amp-instrumentation on top, which brings the Traceloop SDK the platform's tracing uses.
 langchain>=1.3.0
 langchain-core>=1.4.9
 langchain-openai>=0.3.35
