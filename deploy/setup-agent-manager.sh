@@ -91,6 +91,32 @@ case "$CODE" in
   *)   echo "preflight: unexpected HTTP $CODE from $MCP_PUBLIC_URL, continuing (discovery will show the real error)" ;;
 esac
 
+say "Environment '$ENVIRONMENT' and its AI gateway"
+ENVS_JSON="$(amctl api "/orgs/$ORG/environments" 2>/dev/null || true)"
+ENV_UUID="${ENV_UUID:-$(find_id "$ENVS_JSON" "$ENVIRONMENT" uuid environmentUuid id)}"
+[ -n "$ENV_UUID" ] || die "Could not resolve the environment UUID. Run: amctl api /orgs/$ORG/environments   then re-run with ENV_UUID=<uuid>"
+echo "environment '$ENVIRONMENT' = $ENV_UUID"
+# Every org gateway, with the environments it serves. The LLM provider and the MCP proxy both deploy to the egress-capable
+# gateway mapped to this environment. With none mapped, Agent Manager still creates the MCP proxy but deploys nothing,
+# and everything after that fails ("MCP proxy is not deployed to environment"). So check first.
+ALL_GW="$(amctl api "/orgs/$ORG/gateways?limit=100" 2>/dev/null || true)"
+EGRESS='select((.gatewayType // "BOTH") | test("EGRESS|BOTH"; "i"))'
+IN_ENV="$(jq -c --arg e "$ENV_UUID" --arg n "$ENVIRONMENT" --arg g "${GATEWAY:-}" "[(.gateways // .data.gateways // [])[] | $EGRESS
+  | select(any(.environments[]?; .id == \$e or .name == \$n)) | select((\$g == \"\") or (.name == \$g) or (.uuid == \$g))]" <<<"$ALL_GW" 2>/dev/null || echo '[]')"
+case "$(jq 'length' <<<"$IN_ENV")" in
+  1) GATEWAY_UUID="$(jq -r '.[0].uuid' <<<"$IN_ENV")"
+     echo "gateway '$(jq -r '.[0].name' <<<"$IN_ENV")' = $GATEWAY_UUID (status $(jq -r '.[0].status' <<<"$IN_ENV"))" ;;
+  0) OTHERS="$(jq -r "[(.gateways // .data.gateways // [])[] | $EGRESS] | .[] | \"    \(.name)  uuid=\(.uuid)  status=\(.status)  environments=\([.environments[]?.name] | join(\",\") | if . == \"\" then \"(none)\" else . end)\"" <<<"$ALL_GW" 2>/dev/null)"
+     die "No egress AI gateway is mapped to environment '$ENVIRONMENT' ($ENV_UUID). Without one, the LLM provider and the MCP proxy cannot be deployed.
+  Egress-capable gateways in this organization:
+${OTHERS:-    (none found. Is Agent Manager fully installed? Check: amctl gateway list)}
+  Map one to the environment, then re-run this script:
+    amctl api /orgs/$ORG/gateways/<gateway uuid>/environments/$ENV_UUID -X POST
+  (Console: Organization > Gateways > <gateway> > Environments > add '$ENVIRONMENT'.)
+  If an earlier run already created the proxy '$PROXY', this script replaces it on the next run because it was never deployed." ;;
+  *) die "More than one egress gateway is mapped to environment '$ENVIRONMENT': $(jq -r '[.[].name] | join(", ")' <<<"$IN_ENV"). Re-run with GATEWAY=<name>." ;;
+esac
+
 say "Project '$PROJECT'"
 soft amctl project create "$PROJECT" --display-name "Customer Support Demo" --description "Trusted AI governance demo: refund agent"
 soft amctl context link --project "$PROJECT"
@@ -101,11 +127,6 @@ printf '%s' "$OPENAI_API_KEY" | soft amctl llm-provider create "$PROVIDER" --dis
   --template openai --context /openai --version v1.0 --api-key-stdin ${GW_ARGS[@]+"${GW_ARGS[@]}"}
 
 say "Deploy '$PROVIDER' to the AI gateway (a provider that is not deployed answers 404)"
-GATEWAYS_JSON="$(amctl gateway list --env "$ENVIRONMENT" --json 2>/dev/null || true)"
-GATEWAY_UUID="${GATEWAY_UUID:-$(jq -r --arg g "${GATEWAY:-}" '
-  [(.data.gateways // .gateways // [])[]
-   | select(($g == "") or (.name == $g) or (.uuid == $g))
-   | select((.gatewayType // "BOTH") | test("EGRESS|BOTH"; "i"))] | first | .uuid // empty' <<<"$GATEWAYS_JSON" 2>/dev/null)}"
 if [ -z "$GATEWAY_UUID" ]; then
   echo "  Could not pick a gateway automatically. Run: amctl gateway list --env $ENVIRONMENT"
   echo "  then re-run with GATEWAY=<name>. Or deploy the provider in the Console (LLM Service Providers > Shared OpenAI)."
@@ -123,10 +144,6 @@ else
 fi
 
 say "Orders & Payments MCP proxy (OAuth, per-tool authorization)"
-ENVS_JSON="$(amctl api "/orgs/$ORG/environments" 2>/dev/null || true)"
-ENV_UUID="${ENV_UUID:-$(find_id "$ENVS_JSON" "$ENVIRONMENT" uuid environmentUuid id)}"
-[ -n "$ENV_UUID" ] || die "Could not resolve the environment UUID. Run: amctl api /orgs/$ORG/environments   then re-run with ENV_UUID=<uuid>"
-echo "environment '$ENVIRONMENT' = $ENV_UUID"
 
 UPSTREAM_AUTH="$(jq -nc --arg k "$GATEWAY_KEY" '{type:"api-key", header:"X-API-Key", value:$k}')"
 echo "+ discovering tools at $MCP_PUBLIC_URL"
@@ -141,15 +158,30 @@ EXPECTED="$(jq '[.[]] | add | length' governance/scopes.json)"
 echo "  found $TOOL_COUNT tools"
 
 echo "+ POST /orgs/$ORG/mcp-proxies"
-PROXY_BODY="$(jq -nc --arg id "$PROXY" --arg u "$MCP_PUBLIC_URL" --arg e "$ENV_UUID" --argjson a "$UPSTREAM_AUTH" --argjson t "$TOOLS" '{
+PROXY_BODY="$(jq -nc --arg gw "$GATEWAY_UUID" --arg id "$PROXY" --arg u "$MCP_PUBLIC_URL" --arg e "$ENV_UUID" --argjson a "$UPSTREAM_AUTH" --argjson t "$TOOLS" '{
   id:$id, name:"Orders & Payments", description:"Mock order management and payments for the trusted AI governance demo",
   version:"v1.0", context:("/" + $id), mcpSpecVersion:"2025-06-18",
   endpoints:[{id:"primary", name:"primary", upstream:{main:{url:$u, auth:$a}}, capabilities:{tools:$t},
-              security:{enabled:true, identity:{enabled:true}}, environments:[{environmentUuid:$e}]}]}')"
-OUT="$(printf '%s' "$PROXY_BODY" | amctl api "/orgs/$ORG/mcp-proxies" -X POST --input - 2>&1)" || {
-  if amctl api "/orgs/$ORG/mcp-proxies/$PROXY" >/dev/null 2>&1; then echo "  (proxy '$PROXY' already exists, keeping it)"
-  else die "Could not create the MCP proxy: $OUT"; fi
+              security:{enabled:true, identity:{enabled:true}}, environments:[{environmentUuid:$e, gatewayId:$gw}]}]}')"
+proxy_deployed() { # true when every endpoint/environment of the proxy reports a deployment
+  amctl api "/orgs/$ORG/mcp-proxies/$PROXY" 2>/dev/null \
+    | jq -e '[.. | objects | select(has("status") and (.status | type == "string") and (.status | test("^(deployed|undeployed)$"; "i")))]
+             | length > 0 and all(.status | test("^deployed$"; "i"))' >/dev/null 2>&1
 }
+if amctl api "/orgs/$ORG/mcp-proxies/$PROXY" >/dev/null 2>&1; then
+  if proxy_deployed; then
+    echo "  (proxy '$PROXY' already exists and is deployed, keeping it)"
+  else
+    echo "  proxy '$PROXY' exists from an earlier run but was never deployed to a gateway. Replacing it."
+    amctl api "/orgs/$ORG/mcp-proxies/$PROXY" -X DELETE >/dev/null || die "Could not delete the undeployed proxy '$PROXY'. Delete it in the Console (MCP Servers) and re-run."
+  fi
+fi
+if ! amctl api "/orgs/$ORG/mcp-proxies/$PROXY" >/dev/null 2>&1; then
+  OUT="$(printf '%s' "$PROXY_BODY" | amctl api "/orgs/$ORG/mcp-proxies" -X POST --input - 2>&1)" || die "Could not create the MCP proxy: $OUT"
+fi
+for i in $(seq 1 10); do proxy_deployed && break; sleep 3; done
+proxy_deployed && echo "  deployed to gateway $GATEWAY_UUID" \
+  || die "The MCP proxy '$PROXY' was created but is not deployed to environment '$ENVIRONMENT'. Check Console: MCP Servers > Orders & Payments > Manage Endpoints, and the gateway status: amctl gateway list"
 
 say "Scopes: read, escalate, refund (Tier-1), approve (supervisor exception), credit (store credit)"
 for action in read escalate refund approve credit; do
@@ -171,7 +203,8 @@ for role in \
   "{\"name\":\"support-assistant\",\"description\":\"Tier-1 support assistant: read, Tier-1 refunds, escalate to a human\",\"scopes\":[\"$PROXY:read\",\"$PROXY:escalate\",\"$PROXY:refund\"]}" \
   "{\"name\":\"support-supervisor\",\"description\":\"Supervisor: everything, including exception refunds and store credit\",\"scopes\":[\"$PROXY:read\",\"$PROXY:escalate\",\"$PROXY:refund\",\"$PROXY:approve\",\"$PROXY:credit\"]}"; do
   echo "+ role $(jq -r .name <<<"$role")"
-  printf '%s' "$role" | amctl api "$ROLES_PATH" -X POST --input - || echo "  (did not succeed, it may already exist; continuing)"
+  OUT="$(printf '%s' "$role" | amctl api "$ROLES_PATH" -X POST --input - 2>&1)" \
+    || { grep -qiE "already exists|conflict|409" <<<"$OUT" && echo "  (already exists)" || die "Could not create the role: $OUT"; }
 done
 
 say "Agents (platform-hosted, built from $REPO_URL, path $APP_PATH)"
