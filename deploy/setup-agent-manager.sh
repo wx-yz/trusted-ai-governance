@@ -197,10 +197,10 @@ PROXY_BODY="$(jq -nc --arg gw "$GATEWAY_UUID" --arg id "$PROXY" --arg u "$MCP_PU
   version:"v1.0", context:("/" + $id), mcpSpecVersion:"2025-06-18",
   endpoints:[{id:"primary", name:"primary", upstream:{main:{url:$u, auth:$a}}, capabilities:{tools:$t},
               security:{enabled:true, identity:{enabled:true}}, environments:[{environmentUuid:$e, gatewayId:$gw}]}]}')"
-proxy_deployed() { # true when every endpoint/environment of the proxy reports a deployment
+proxy_deployed() { # true when the proxy's binding to this environment reports deploymentStatus "Deployed"
   amctl api "/orgs/$ORG/mcp-proxies/$PROXY" 2>/dev/null \
-    | jq -e '[.. | objects | select(has("status") and (.status | type == "string") and (.status | test("^(deployed|undeployed)$"; "i")))]
-             | length > 0 and all(.status | test("^deployed$"; "i"))' >/dev/null 2>&1
+    | jq -e --arg e "$ENV_UUID" '[(.endpoints // [])[] | (.environments // [])[] | select(.environmentUuid == $e)]
+             | length > 0 and all(.deploymentStatus == "Deployed")' >/dev/null 2>&1
 }
 if amctl api "/orgs/$ORG/mcp-proxies/$PROXY" >/dev/null 2>&1; then
   if proxy_deployed; then
@@ -215,7 +215,9 @@ if ! amctl api "/orgs/$ORG/mcp-proxies/$PROXY" >/dev/null 2>&1; then
 fi
 for i in $(seq 1 10); do proxy_deployed && break; sleep 3; done
 proxy_deployed && echo "  deployed to gateway $GATEWAY_UUID" \
-  || die "The MCP proxy '$PROXY' was created but is not deployed to environment '$ENVIRONMENT'. Check Console: MCP Servers > Orders & Payments > Manage Endpoints, and the gateway status: amctl gateway list"
+  || die "The MCP proxy '$PROXY' exists but its binding to environment '$ENVIRONMENT' does not report Deployed. What Agent Manager says:
+$(amctl api "/orgs/$ORG/mcp-proxies/$PROXY" 2>&1 | jq -c '[(.endpoints // [])[] | {endpoint: .id, environments}], {gateways}' 2>/dev/null)
+  Check Console: MCP Servers > Orders & Payments > Manage Endpoints, and the gateway: amctl gateway list"
 
 say "Scopes: read, escalate, refund (Tier-1), approve (supervisor exception), credit (store credit)"
 for action in read escalate refund approve credit; do
