@@ -64,11 +64,19 @@ fi
 # and only then fall back to the docker-compose demo keys. Every step says what it found, so a 401 below is explainable.
 NS_MCP=support-demo
 KEY_SRC=""; KEY_NOTES=()
-KCTX="$(kubectl config current-context 2>&1 || true)"
+# Inside the amp-quick-start container kubectl has no kubeconfig at all. k3d can write one for the cluster.
+if command -v kubectl >/dev/null && ! kubectl config current-context >/dev/null 2>&1 && command -v k3d >/dev/null; then
+  K3D_KC="$(mktemp)"
+  if k3d kubeconfig get "${CLUSTER:-amp-local}" >"$K3D_KC" 2>/dev/null && [ -s "$K3D_KC" ]; then
+    export KUBECONFIG="$K3D_KC"
+    echo "kubectl:   no context set, using a kubeconfig from 'k3d kubeconfig get ${CLUSTER:-amp-local}'"
+  fi
+fi
+KCTX="$(kubectl config current-context 2>/dev/null || echo 'none')"
 if ! command -v kubectl >/dev/null; then
   KEY_NOTES+=("kubectl is not installed in this shell")
 elif ! OUT="$(kubectl -n "$NS_MCP" get deploy/commerce-mcp -o name 2>&1)"; then
-  KEY_NOTES+=("kubectl context '$KCTX' cannot see deploy/commerce-mcp in namespace $NS_MCP: $OUT")
+  KEY_NOTES+=("kubectl context '$KCTX' cannot see deploy/commerce-mcp in namespace $NS_MCP: $(tail -n 1 <<<"$OUT")")
 else
   KEYS="$(kubectl -n "$NS_MCP" exec deploy/commerce-mcp -- printenv COMMERCE_API_KEYS 2>/dev/null | tr -d '\r\n' || true)"
   if [ -n "$KEYS" ]; then KEY_SRC="the running commerce-mcp pod"
@@ -233,7 +241,10 @@ for action in read escalate refund approve credit; do
   esac
   echo "+ scope $PROXY:$action"
   jq -nc --arg a "$action" --arg d "$desc" --slurpfile s governance/scopes.json '{action:$a, description:$d, tools:$s[0][$a]}' \
-    | amctl api "/orgs/$ORG/mcp-proxies/$PROXY/scopes" -X POST --input - || echo "  (did not succeed, it may already exist; continuing)"
+    | amctl api "/orgs/$ORG/mcp-proxies/$PROXY/scopes" -X POST --input - >/tmp/scope.$$ 2>&1 \
+    && cat /tmp/scope.$$ \
+    || { grep -qiE "already exists|409" /tmp/scope.$$ && echo "  (already exists)" || { cat /tmp/scope.$$; echo "  (did not succeed; continuing)"; }; }
+  rm -f /tmp/scope.$$
 done
 
 say "Roles (per environment)"
@@ -242,6 +253,10 @@ for role in \
   "{\"name\":\"support-assistant\",\"description\":\"Tier-1 support assistant: read, Tier-1 refunds, escalate to a human\",\"scopes\":[\"$PROXY:read\",\"$PROXY:escalate\",\"$PROXY:refund\"]}" \
   "{\"name\":\"support-supervisor\",\"description\":\"Supervisor: everything, including exception refunds and store credit\",\"scopes\":[\"$PROXY:read\",\"$PROXY:escalate\",\"$PROXY:refund\",\"$PROXY:approve\",\"$PROXY:credit\"]}"; do
   echo "+ role $(jq -r .name <<<"$role")"
+  # Agent Manager answers a duplicate role name with HTTP 500, not 409, so look before creating.
+  if [ -n "$(find_id "$(amctl api "$ROLES_PATH" 2>/dev/null || true)" "$(jq -r .name <<<"$role")" id roleId)" ]; then
+    echo "  (already exists, keeping it)"; continue
+  fi
   OUT="$(printf '%s' "$role" | amctl api "$ROLES_PATH" -X POST --input - 2>&1)" \
     || { grep -qiE "already exists|conflict|409" <<<"$OUT" && echo "  (already exists)" || die "Could not create the role: $OUT"; }
 done
