@@ -57,36 +57,67 @@ if [[ "$MCP_PUBLIC_URL" != http*://* ]] || [[ "$host" =~ ^(localhost|127\.|10\.|
   die "MCP_PUBLIC_URL '$MCP_PUBLIC_URL' is not public. Agent Manager rejects MCP upstreams that resolve to a private address. Run ./deploy/expose-mcp.sh."
 fi
 
-# ---- keys: read the ones deploy-mcp.sh generated, fall back to the docker-compose defaults
-KUBE_ERR="$(kubectl -n support-demo get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' 2>&1 >/dev/null || true)"
-KEYS="$(kubectl -n support-demo get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' 2>/dev/null | base64 --decode 2>/dev/null || true)"
-pick() { tr ',' '\n' <<<"$KEYS" | sed -n "s/^$1=//p" | head -1; }
+# ---- keys: the running MCP server is the source of truth. Ask the pod first (what it actually loaded), then the secret,
+# and only then fall back to the docker-compose demo keys. Every step says what it found, so a 401 below is explainable.
+NS_MCP=support-demo
+KEY_SRC=""; KEY_NOTES=()
+KCTX="$(kubectl config current-context 2>&1 || true)"
+if ! command -v kubectl >/dev/null; then
+  KEY_NOTES+=("kubectl is not installed in this shell")
+elif ! OUT="$(kubectl -n "$NS_MCP" get deploy/commerce-mcp -o name 2>&1)"; then
+  KEY_NOTES+=("kubectl context '$KCTX' cannot see deploy/commerce-mcp in namespace $NS_MCP: $OUT")
+else
+  KEYS="$(kubectl -n "$NS_MCP" exec deploy/commerce-mcp -- printenv COMMERCE_API_KEYS 2>/dev/null | tr -d '\r\n' || true)"
+  if [ -n "$KEYS" ]; then KEY_SRC="the running commerce-mcp pod"
+  else
+    KEY_NOTES+=("the commerce-mcp pod has no COMMERCE_API_KEYS variable (or exec failed)")
+    RAW="$(kubectl -n "$NS_MCP" get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' 2>&1 || true)"
+    KEYS="$(base64 --decode <<<"$RAW" 2>/dev/null || true)"
+    if [[ "$KEYS" == *gateway=* ]]; then KEY_SRC="the secret $NS_MCP/commerce-mcp-keys"
+    else KEYS=""; KEY_NOTES+=("secret $NS_MCP/commerce-mcp-keys has no usable COMMERCE_API_KEYS (kubectl: ${RAW:-empty}; data keys: $(kubectl -n "$NS_MCP" get secret commerce-mcp-keys -o jsonpath='{.data}' 2>&1 | grep -o '"[A-Z_]*"' | tr '\n' ' '))")
+    fi
+  fi
+fi
+pick() { tr ',' '\n' <<<"${KEYS:-}" | sed -n "s/^$1=//p" | head -1; }
+if [ -n "${GATEWAY_KEY:-}" ]; then KEY_SRC="GATEWAY_KEY / DIRECT_KEY from the environment"; fi
 GATEWAY_KEY="${GATEWAY_KEY:-$(pick gateway)}"; GATEWAY_KEY="${GATEWAY_KEY:-commerce-gateway-demo-key}"   # attached by the MCP proxy
 DIRECT_KEY="${DIRECT_KEY:-$(pick direct)}";    DIRECT_KEY="${DIRECT_KEY:-commerce-direct-demo-key}"        # held by the ungoverned agent
 echo "repo:      $REPO_URL ($REPO_BRANCH) path $APP_PATH"
 echo "MCP proxy: $MCP_PUBLIC_URL"
 echo "MCP direct (ungoverned agent): $MCP_DIRECT_URL"
-if [ -n "$KEYS" ]; then
-  echo "keys:      read from the cluster secret commerce-mcp-keys. direct starts ${DIRECT_KEY:0:4}... (held by the ungoverned agent), gateway starts ${GATEWAY_KEY:0:4}... (attached by the MCP proxy)"
+if [ -n "$KEY_SRC" ]; then
+  echo "keys:      from $KEY_SRC. direct starts ${DIRECT_KEY:0:4}..., gateway starts ${GATEWAY_KEY:0:4}..."
 else
-  echo "keys:      could not read the cluster secret support-demo/commerce-mcp-keys (kubectl said: ${KUBE_ERR:-nothing}). Using the built-in docker-compose demo keys."
+  echo "keys:      using the built-in docker-compose demo keys, because:"; printf '             - %s\n' "${KEY_NOTES[@]}"
 fi
 
 # ---- preflight: the gateway key must open the published MCP endpoint, or the proxy will be created with a dead credential.
-# A real MCP initialize call, exactly what Agent Manager does during discovery.
+# A real MCP initialize call, exactly what Agent Manager does during discovery. When the keys came from the cluster, the same
+# call against the local port-forward tells a wrong key apart from a tunnel that points at some other server.
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"setup-script","version":"1"}}}'
-CODE="$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "$MCP_PUBLIC_URL" -H 'Content-Type: application/json' \
-  -H 'Accept: application/json, text/event-stream' -H "X-API-Key: $GATEWAY_KEY" -d "$INIT" || echo 000)"
+probe() { curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST "$1" -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' -H "X-API-Key: $GATEWAY_KEY" -d "$INIT" || echo 000; }
+CODE="$(probe "$MCP_PUBLIC_URL")"
 case "$CODE" in
   200) echo "preflight: the gateway key opens $MCP_PUBLIC_URL (HTTP 200)" ;;
-  401) die "The gateway key does not open $MCP_PUBLIC_URL (HTTP 401). The MCP server in the cluster runs with the random keys that deploy/deploy-mcp.sh generated, and this shell could not read them (kubectl said: ${KUBE_ERR:-nothing}).
-  Fix one of these, then re-run:
-    a) point kubectl at the cluster that runs the MCP server (kubectl config use-context k3d-amp-local; kubectl -n support-demo get secret commerce-mcp-keys)
-    b) read the keys where kubectl works and pass them in:
-         KEYS=\$(kubectl -n support-demo get secret commerce-mcp-keys -o jsonpath='{.data.COMMERCE_API_KEYS}' | base64 --decode)
-         export GATEWAY_KEY=\${KEYS##*gateway=}; export DIRECT_KEY=\$(sed -n 's/.*direct=\([^,]*\).*/\1/p' <<<\"\$KEYS\")
-    c) or make the cluster use the demo keys: kubectl -n support-demo delete secret commerce-mcp-keys && kubectl -n support-demo create secret generic commerce-mcp-keys --from-literal=COMMERCE_API_KEYS='direct=commerce-direct-demo-key,gateway=commerce-gateway-demo-key' && kubectl -n support-demo rollout restart deploy/commerce-mcp
-  If the proxy '$PROXY' was already created with the wrong key, fix it in the Console: MCP Servers > Orders & Payments > Connection, header X-API-Key." ;;
+  401)
+    LOCAL="$(probe http://localhost:18080/mcp)"
+    if [ -n "$KEY_SRC" ] && [ "$LOCAL" = 200 ]; then
+      die "The tunnel $MCP_PUBLIC_URL answers 401, but the same key opens the MCP server on localhost:18080 (HTTP 200).
+  So the tunnel URL does not lead to this cluster's MCP server: it is an old URL, or another tunnel/process owns it.
+  Take the URL that ./deploy/expose-mcp.sh printed in THIS run (also in deploy/.last-mcp-url), export MCP_PUBLIC_URL and re-run."
+    fi
+    if [ -n "$KEY_SRC" ]; then
+      die "The key from $KEY_SRC does not open $MCP_PUBLIC_URL (HTTP 401; localhost:18080 answered HTTP $LOCAL).
+  The pod may have been started with an older secret. Restart it so it loads the current one, then re-run:
+    kubectl -n $NS_MCP rollout restart deploy/commerce-mcp && kubectl -n $NS_MCP rollout status deploy/commerce-mcp"
+    fi
+    die "The demo keys do not open $MCP_PUBLIC_URL (HTTP 401), and this shell could not read the real keys:
+$(printf '    - %s\n' "${KEY_NOTES[@]}")
+  Run the script where 'kubectl -n $NS_MCP get pods' works, or pass the keys in from a shell where it does:
+    KEYS=\$(kubectl -n $NS_MCP exec deploy/commerce-mcp -- printenv COMMERCE_API_KEYS)
+    export GATEWAY_KEY=\$(tr ',' '\\n' <<<\"\$KEYS\" | sed -n 's/^gateway=//p') DIRECT_KEY=\$(tr ',' '\\n' <<<\"\$KEYS\" | sed -n 's/^direct=//p')
+  If an earlier run created the proxy '$PROXY' with a wrong key, fix it in the Console: MCP Servers > Orders & Payments > Connection, header X-API-Key." ;;
   000) die "Nothing answered at $MCP_PUBLIC_URL (connection failed or timed out). Is ./deploy/expose-mcp.sh still running, and is this its current URL?" ;;
   *)   echo "preflight: unexpected HTTP $CODE from $MCP_PUBLIC_URL, continuing (discovery will show the real error)" ;;
 esac
@@ -125,6 +156,9 @@ say "LLM provider '$PROVIDER' (the OpenAI key is stored here once, agents never 
 GW_ARGS=(); [ -n "${GATEWAY:-}" ] && GW_ARGS=(--gateways "$GATEWAY")
 printf '%s' "$OPENAI_API_KEY" | soft amctl llm-provider create "$PROVIDER" --display-name "Shared OpenAI" \
   --template openai --context /openai --version v1.0 --api-key-stdin ${GW_ARGS[@]+"${GW_ARGS[@]}"}
+# Confirm it exists before deploying it. (A missing provider makes the deployments endpoint answer 500, not 404.)
+amctl api "/orgs/$ORG/llm-providers" 2>/dev/null | jq -e --arg p "$PROVIDER" '[.. | objects | select(.handle? == $p or .id? == $p or .name? == $p)] | length > 0' >/dev/null \
+  || die "LLM provider '$PROVIDER' does not exist after the create step. Check the error above, and: amctl api /orgs/$ORG/llm-providers"
 
 say "Deploy '$PROVIDER' to the AI gateway (a provider that is not deployed answers 404)"
 if [ -z "$GATEWAY_UUID" ]; then
