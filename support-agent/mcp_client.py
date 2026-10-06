@@ -1,7 +1,7 @@
-"""Salesforce MCP client used by the agent.
+"""Orders & Payments MCP client used by the agent.
 
 A new MCP session is opened per call. That keeps the code stateless and means the identity headers
-(signed-in user, call id, fresh token) are always current. Denials from the gateway are classified so
+(signed-in customer, call id, fresh token) are always current. Denials from the gateway are classified so
 the agent can report them as governance events instead of treating them as generic failures.
 """
 
@@ -100,22 +100,22 @@ def classify(exc: BaseException) -> tuple[int | None, str | None, str]:
 
 
 def explain(status: int | None, message: str, url: str = "") -> str:
-    """A one-line hint for the most common reasons the Salesforce MCP server cannot be reached."""
+    """A one-line hint for the most common reasons the Orders & Payments MCP server cannot be reached."""
     low = message.lower()
     dns_failed = any(k in low for k in ("name or service not known", "nodename nor servname", "getaddrinfo", "name resolution"))
     if dns_failed and "trycloudflare.com" in url:
         return ("That is a quick-tunnel name, and it stops resolving when the tunnel stops or restarts. The tunnel URL has "
                 "probably changed: take the current one from ./deploy/expose-mcp.sh (it also saves it in deploy/.last-mcp-url) "
-                "and update SF_MCP_URL on this agent, then redeploy. For a URL that never changes, see the README section on a stable URL.")
+                "and update COMMERCE_MCP_URL on this agent, then redeploy. For a URL that never changes, see the README section on a stable URL.")
     if status == 401:
-        return "The credential was rejected. For the ungoverned agent, SF_MCP_API_KEY must equal the MCP server's 'direct' key."
+        return "The credential was rejected. For the ungoverned agent, COMMERCE_MCP_API_KEY must equal the MCP server's 'direct' key."
     if status == 404 or "session terminated" in low:
-        return "Nothing answers at that path. SF_MCP_URL should end in /mcp."
+        return "Nothing answers at that path. COMMERCE_MCP_URL should end in /mcp."
     if any(k in low for k in ("name or service not known", "nodename nor servname", "getaddrinfo", "name resolution")):
-        return "The host name in SF_MCP_URL does not resolve from the agent pod."
+        return "The host name in COMMERCE_MCP_URL does not resolve from the agent pod."
     if any(k in low for k in ("connecterror", "connecttimeout", "all connection attempts failed", "refused", "timed out", "timeout")):
-        return ("The agent pod cannot open a connection to SF_MCP_URL. If it is the in-cluster service URL, a network policy "
-                "probably blocks calls into that namespace: set SF_MCP_URL to the public tunnel URL. If it already is the "
+        return ("The agent pod cannot open a connection to COMMERCE_MCP_URL. If it is the in-cluster service URL, a network policy "
+                "probably blocks calls into that namespace: set COMMERCE_MCP_URL to the public tunnel URL. If it already is the "
                 "tunnel URL, check that deploy/expose-mcp.sh is still running and that the URL has not changed.")
     return ""
 
@@ -127,23 +127,23 @@ def _compact(text: str) -> str:
         return text
 
 
-class SalesforceMcp:
+class CommerceMcp:
     def __init__(self, cfg: Config, identity: AgentIdentity) -> None:
         self.cfg = cfg
         self.identity = identity
 
     async def _headers(self, user_id: str | None, call_id: str) -> dict[str, str]:
-        headers = await self.identity.auth_headers(self.cfg.sf_mcp_url)
+        headers = await self.identity.auth_headers(self.cfg.mcp_url)
         headers["X-Call-Id"] = call_id
         headers["X-Agent-Name"] = self.cfg.agent_name
         if user_id:
-            # The signed-in account manager. The model never chooses this, the application does.
-            headers["X-Acting-User"] = user_id
+            # The signed-in customer. The model never chooses this, the application does.
+            headers["X-Customer-Id"] = user_id
         return headers
 
     async def list_tools(self, user_id: str | None, call_id: str) -> list[types.Tool]:
         headers = await self._headers(user_id, call_id)
-        async with streamablehttp_client(self.cfg.sf_mcp_url, headers=headers, timeout=20) as (r, w, _):
+        async with streamablehttp_client(self.cfg.mcp_url, headers=headers, timeout=20) as (r, w, _):
             async with ClientSession(r, w) as session:
                 await session.initialize()
                 return list((await session.list_tools()).tools)
@@ -151,7 +151,7 @@ class SalesforceMcp:
     async def call_tool(self, name: str, arguments: dict[str, Any], user_id: str | None, call_id: str) -> ToolOutcome:
         try:
             headers = await self._headers(user_id, call_id)
-            async with streamablehttp_client(self.cfg.sf_mcp_url, headers=headers, timeout=30) as (r, w, _):
+            async with streamablehttp_client(self.cfg.mcp_url, headers=headers, timeout=30) as (r, w, _):
                 async with ClientSession(r, w) as session:
                     await session.initialize()
                     result = await session.call_tool(name, arguments)

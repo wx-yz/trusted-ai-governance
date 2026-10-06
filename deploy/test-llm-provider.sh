@@ -12,7 +12,7 @@ set -uo pipefail
 
 ORG="${ORG:-default}"
 ENVIRONMENT="${ENVIRONMENT:-default}"
-PROJECT="${PROJECT:-sales-demo}"
+PROJECT="${PROJECT:-support-demo}"
 PROVIDER="${PROVIDER:-shared-openai}"
 MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_BASE="${OPENAI_BASE:-https://api.openai.com/v1}"
@@ -50,7 +50,7 @@ echo "  agents reach it in-cluster at: ${RUNTIME:-unknown}"
 say "1. The provider's own route (agents do not call this one, but the proxy forwards to it)"
 if route_exists "$VHOST${CTX}/chat/completions"; then echo "  ${CTX}/chat/completions   HTTP $LAST_CODE   route exists"; PROVIDER_ROUTE=yes
 else echo "  ${CTX}/chat/completions   HTTP $LAST_CODE   NO ROUTE"; PROVIDER_ROUTE=no; fi
-route_exists "$VHOST/salesforce/mcp" && echo "  control: /salesforce/mcp   HTTP $LAST_CODE   route exists (the gateway itself is up)" || echo "  control: /salesforce/mcp   HTTP $LAST_CODE   no route"
+route_exists "$VHOST/commerce/mcp" && echo "  control: /commerce/mcp   HTTP $LAST_CODE   route exists (the gateway itself is up)" || echo "  control: /commerce/mcp   HTTP $LAST_CODE   no route"
 
 say "2. The LLM proxies Agent Manager created in front of the provider (these are what agents call)"
 PR="$(amctl api "/orgs/$ORG/llm-providers/$PROVIDER/llm-proxies" 2>&1 || true)"
@@ -91,7 +91,7 @@ elif [ "$OPENAI_CODE" = "401" ]; then
   echo "  OpenAI rejects the key. Fix it on the provider and on the ungoverned agent."
 elif [ "$PROXY_COUNT" -eq 0 ]; then
   echo "  The provider has no LLM proxy, so the agent's LLM_PROVIDER_URL points at nothing."
-  echo "  Console: sales-copilot > Configure > LLM Configurations: remove the configuration, add Shared OpenAI again, redeploy the agent."
+  echo "  Console: support-agent > Configure > LLM Configurations: remove the configuration, add Shared OpenAI again, redeploy the agent."
 elif [ -n "$MISSING" ]; then
   echo "  The proxy exists in Agent Manager but has no live route on the gateway:$MISSING"
   echo "  That is the 404. Deploy it to the gateway:"

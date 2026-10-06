@@ -14,10 +14,10 @@
   <header class="top">
     <div class="brand">
       <div class="logo">🛡️</div>
-      <div><h1>Trusted AI Governance</h1><small>WSO2 Agent Manager · live enforcement</small></div>
+      <div><h1>Trusted AI Governance</h1><small>WSO2 Agent Manager · live enforcement · refund agent</small></div>
     </div>
     <div class="toppills">
-      <span class="pill"><span class="dot" id="auditDot"></span><span id="auditTxt">Salesforce audit feed</span></span>
+      <span class="pill"><span class="dot" id="auditDot"></span><span id="auditTxt">Payments audit feed</span></span>
     </div>
     <div class="toolbar">
       <button class="btn" id="popBtn">⛶ Full screen</button>
@@ -26,45 +26,45 @@
   </header>
 
   <section class="kpis">
-    <div class="tile cyan" id="tTurns"><div class="lbl">Agent requests</div><div class="val" data-v>0</div><div class="sub" data-s>&nbsp;</div></div>
-    <div class="tile red" id="tLeaks"><div class="lbl">Data leaks</div><div class="val" data-v>0</div><div class="sub" data-s>&nbsp;</div></div>
+    <div class="tile slate" id="tTurns"><div class="lbl">Agent requests</div><div class="val" data-v>0</div><div class="sub" data-s>&nbsp;</div></div>
+    <div class="tile green" id="tWithin"><div class="lbl">Refunded within policy</div><div class="val" data-v>$0</div><div class="sub" data-s>&nbsp;</div></div>
+    <div class="tile red" id="tOutside"><div class="lbl">Paid out outside policy</div><div class="val" data-v>$0</div><div class="sub" data-s>&nbsp;</div></div>
     <div class="tile violet" id="tId"><div class="lbl">Blocked · AgentID</div><div class="val" data-v>0</div><div class="sub" data-s>&nbsp;</div></div>
     <div class="tile amber" id="tLlm"><div class="lbl">Blocked · Guardrails</div><div class="val" data-v>0</div><div class="sub" data-s>&nbsp;</div></div>
-    <div class="tile pink" id="tFields"><div class="lbl">Sensitive fields exposed</div><div class="val" data-v>0</div><div class="sub" data-s>&nbsp;</div></div>
-    <div class="tile green" id="tStop"><div class="lbl">Risky attempts stopped</div><div class="val" data-v>–</div><div class="sub" data-s>&nbsp;</div></div>
+    <div class="tile cyan" id="tProtected"><div class="lbl">Money protected</div><div class="val" data-v>$0</div><div class="sub" data-s>&nbsp;</div></div>
   </section>
 
   <section class="mid">
     <article class="lane un">
-      <div class="lhead"><span class="ltag">UNGOVERNED</span><span class="lname mono" id="unName">sales-copilot-ungoverned</span><span class="verdict" id="unVerdict">idle</span></div>
+      <div class="lhead"><span class="ltag">UNGOVERNED</span><span class="lname mono" id="unName">support-agent-ungoverned</span><span class="verdict" id="unVerdict">idle</span></div>
       <ul class="facts">
-        <li>🔑 Holds a <b>shared Salesforce key</b> with full access</li>
+        <li>🔑 Holds the <b>shared payments key</b>: every tool, including supervisor ones</li>
         <li>🔑 Holds the <b>raw OpenAI key</b></li>
         <li>🚫 No guardrails between the agent and the model</li>
         <li>👁 Sees <b id="unTools">all</b> tools and may call every one</li>
       </ul>
       <div class="lstats">
-        <div class="ls g"><b id="unCalls">0</b><span>Salesforce calls</span></div>
-        <div class="ls r"><b id="unLeaks">0</b><span>Leaks</span></div>
-        <div class="ls a"><b id="unWrites">0</b><span>CRM writes</span></div>
-        <div class="ls p"><b id="unFields">0</b><span>Fields exposed</span></div>
+        <div class="ls g"><b id="unRefunds">0</b><span>Refunds</span></div>
+        <div class="ls r"><b id="unOutside">$0</b><span>Outside policy</span></div>
+        <div class="ls a"><b id="unRefused">0</b><span>Payments refusals</span></div>
+        <div class="ls p"><b id="unHumans">0</b><span>Humans involved</span></div>
       </div>
-      <div class="meter"><i id="unMeter"></i></div><small>Exposure of other reps' data</small>
+      <div class="meter"><i id="unMeter"></i></div><small>Money paid out outside policy, no human approval</small>
     </article>
 
     <article class="lane gv">
-      <div class="lhead"><span class="ltag">GOVERNED</span><span class="lname mono" id="gvName">sales-copilot</span><span class="verdict" id="gvVerdict">idle</span></div>
+      <div class="lhead"><span class="ltag">GOVERNED</span><span class="lname mono" id="gvName">support-agent</span><span class="verdict" id="gvVerdict">idle</span></div>
       <ul class="facts">
         <li>🪪 AgentID <code id="gvClient">not seen yet</code></li>
         <li>🎟 Token scopes <span class="scopes" id="gvScopes"><span class="scope">–</span></span></li>
         <li>🛡 Guardrails enforced at the AI gateway</li>
-        <li>🔒 No upstream credentials inside the agent</li>
+        <li>📈 Every trace scored by the <b>Refund quality</b> monitor</li>
       </ul>
       <div class="lstats">
-        <div class="ls g"><b id="gvAllowed">0</b><span>Allowed</span></div>
-        <div class="ls v"><b id="gvId">0</b><span>Blocked · AgentID</span></div>
-        <div class="ls a"><b id="gvLlm">0</b><span>Blocked · Guardrail</span></div>
-        <div class="ls r"><b id="gvLeaks">0</b><span>Leaks</span></div>
+        <div class="ls g"><b id="gvRefunds">0</b><span>Refunds</span></div>
+        <div class="ls c"><b id="gvEsc">0</b><span>Escalated to a human</span></div>
+        <div class="ls v"><b id="gvBlocked">0</b><span>Blocked</span></div>
+        <div class="ls g"><b id="gvProtected">$0</b><span>Protected</span></div>
       </div>
       <div class="meter"><i id="gvMeter" style="background:linear-gradient(90deg,#34d399,#22d3ee);box-shadow:0 0 14px #34d399"></i></div><small>Share of risky attempts stopped</small>
     </article>
@@ -76,6 +76,7 @@
         <div class="layer" data-l="scope"><span class="n">2</span><div><b>Tool scopes</b><small>What it may call</small></div><span class="cnt" id="cScope">0</span></div>
         <div class="layer" data-l="llm"><span class="n">3</span><div><b>LLM guardrails</b><small>What the model sees</small></div><span class="cnt" id="cLlm">0</span></div>
         <div class="layer" data-l="audit"><span class="n">4</span><div><b>Audit trail</b><small>What happened</small></div><span class="cnt" id="cAudit">0</span></div>
+        <div class="layer" data-l="eval"><span class="n">5</span><div><b>Evaluation</b><small>Is it behaving · scored in the Console</small></div><span class="cnt" id="cEval">0</span></div>
       </div>
       <div class="note" id="stackNote">&nbsp;</div>
     </article>
@@ -86,18 +87,21 @@
       <h3>Live enforcement feed</h3>
       <button class="btn" id="incBtn" style="padding:3px 10px;font-size:12px">Incidents only</button>
       <div class="legend">
-        <span><i style="background:var(--red)"></i>Data leak</span>
+        <span><i style="background:var(--red)"></i>Paid out outside policy</span>
+        <span><i style="background:var(--orange)"></i>Refused by payments</span>
         <span><i style="background:var(--violet)"></i>Blocked by AgentID</span>
         <span><i style="background:var(--amber)"></i>Blocked by guardrail</span>
-        <span><i style="background:var(--green)"></i>Allowed</span>
+        <span><i style="background:var(--cyan)"></i>Escalated to a human</span>
+        <span><i style="background:var(--green)"></i>Within policy</span>
       </div>
     </div>
     <div class="feed" id="feed"></div>
   </section>
 
   <div class="debug" id="debug" hidden>
-    <button class="btn" data-sim="leak">Sim leak</button><button class="btn" data-sim="id">Sim AgentID block</button>
-    <button class="btn" data-sim="llm">Sim guardrail</button><button class="btn" data-sim="ok">Sim allowed</button>
+    <button class="btn" data-sim="payout">Sim payout</button><button class="btn" data-sim="refused">Sim refusal</button>
+    <button class="btn" data-sim="id">Sim AgentID block</button><button class="btn" data-sim="llm">Sim guardrail</button>
+    <button class="btn" data-sim="esc">Sim escalation</button><button class="btn" data-sim="ok">Sim refund</button>
   </div>
 
   <script src="config.js"></script>

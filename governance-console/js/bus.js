@@ -1,7 +1,7 @@
 // Shared helpers: settings, the channel between the chat page and the dashboard, and a tiny markdown renderer.
 (function () {
-  const CFG_KEY = "gov-demo-config-v1";
-  const MODE_KEY = "gov-demo-mode-v1";
+  const CFG_KEY = "gov-demo-config-v2";
+  const MODE_KEY = "gov-demo-mode-v2";
   const defaults = window.DEMO_CONFIG || {};
 
   function loadConfig() {

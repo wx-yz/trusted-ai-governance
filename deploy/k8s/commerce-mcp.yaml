@@ -1,39 +1,39 @@
-# Mock Salesforce MCP server, deployed next to Agent Manager in the same cluster.
+# Mock Orders & Payments MCP server, deployed next to Agent Manager in the same cluster.
 #   8080  MCP endpoint (/mcp) and /healthz. The only port that is ever published (see deploy/expose-mcp.sh).
 #   8081  /audit, /catalog, /admin/reset for the dashboard. Keep it private.
-# The ungoverned agent reaches the MCP port in-cluster: http://salesforce-mcp.sales-demo.svc.cluster.local:8080/mcp
-# The pod reads its API keys from the Secret salesforce-mcp-keys, which deploy/deploy-mcp.sh creates with random values.
+# The ungoverned agent reaches the MCP port in-cluster: http://commerce-mcp.support-demo.svc.cluster.local:8080/mcp
+# The pod reads its API keys from the Secret commerce-mcp-keys, which deploy/deploy-mcp.sh creates with random values.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: sales-demo
+  name: support-demo
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: salesforce-mcp
-  namespace: sales-demo
-  labels: { app: salesforce-mcp }
+  name: commerce-mcp
+  namespace: support-demo
+  labels: { app: commerce-mcp }
 spec:
   replicas: 1
   selector:
-    matchLabels: { app: salesforce-mcp }
+    matchLabels: { app: commerce-mcp }
   template:
     metadata:
-      labels: { app: salesforce-mcp }
+      labels: { app: commerce-mcp }
     spec:
       containers:
-        - name: salesforce-mcp
-          image: salesforce-mcp:demo
+        - name: commerce-mcp
+          image: commerce-mcp:demo
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
             - containerPort: 8081
           env:
-            - name: SF_ADMIN_PORT
+            - name: COMMERCE_ADMIN_PORT
               value: "8081"
           envFrom:
-            - secretRef: { name: salesforce-mcp-keys }
+            - secretRef: { name: commerce-mcp-keys }
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 2
@@ -45,10 +45,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: salesforce-mcp
-  namespace: sales-demo
+  name: commerce-mcp
+  namespace: support-demo
 spec:
-  selector: { app: salesforce-mcp }
+  selector: { app: commerce-mcp }
   ports:
     - name: mcp
       port: 8080

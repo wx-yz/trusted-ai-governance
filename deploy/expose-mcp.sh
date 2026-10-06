@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Everything the demo needs on your laptop, in one terminal:
 #   http://localhost:3000   the demo UI (chat + dashboard), port-forwarded from the cluster
-#   http://localhost:8090   the Salesforce audit feed for the dashboard (private admin port)
+#   http://localhost:8090   the payments audit feed for the dashboard (private admin port)
 #   a public https URL      for the MCP endpoint ONLY. The Agent Manager API refuses MCP proxy upstreams whose host
 #                           resolves to a private address (*.svc.cluster.local, localhost, 10.x ...), so the MCP
 #                           port is published through a tunnel. /audit and /admin/reset are never published.
@@ -14,7 +14,7 @@
 # For a url that never changes, run your own tunnel to localhost:18080 (for example an ngrok static domain) and start
 # this script with OWN_TUNNEL_URL=https://your-fixed-host. It then skips cloudflared and only does the port-forwards.
 set -euo pipefail
-NS=sales-demo
+NS=support-demo
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LAST_FILE="$HERE/.last-mcp-url"
 
@@ -22,9 +22,9 @@ LAST_FILE="$HERE/.last-mcp-url"
 command -v kubectl >/dev/null || { echo "kubectl not found."; exit 1; }
 
 # 1. The deployed server must be the two-port version, or publishing it would publish /audit and /admin/reset too.
-PORTS="$(kubectl -n "$NS" get svc salesforce-mcp -o jsonpath='{.spec.ports[*].port}' 2>/dev/null || true)"
+PORTS="$(kubectl -n "$NS" get svc commerce-mcp -o jsonpath='{.spec.ports[*].port}' 2>/dev/null || true)"
 if [ -z "$PORTS" ]; then
-  echo "Service salesforce-mcp not found in namespace $NS (kubectl context: $(kubectl config current-context 2>/dev/null || echo unknown))."
+  echo "Service commerce-mcp not found in namespace $NS (kubectl context: $(kubectl config current-context 2>/dev/null || echo unknown))."
   echo "Run ./deploy/deploy-mcp.sh first, and check kubectl points at the amp-local cluster."
   exit 1
 fi
@@ -38,13 +38,13 @@ esac
 PIDS=""
 cleanup() {
   [ -n "$PIDS" ] && kill $PIDS 2>/dev/null || true       # supervisors first, so nothing respawns
-  pkill -f "port-forward svc/salesforce-mcp" 2>/dev/null || true
+  pkill -f "port-forward svc/commerce-mcp" 2>/dev/null || true
   pkill -f "port-forward svc/governance-console" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
 # 2. Clear port-forwards left behind by an earlier run: they hold the ports and hide the new ones.
-pkill -f "port-forward svc/salesforce-mcp" 2>/dev/null || true
+pkill -f "port-forward svc/commerce-mcp" 2>/dev/null || true
 pkill -f "port-forward svc/governance-console" 2>/dev/null || true
 sleep 1
 
@@ -61,8 +61,8 @@ wait_for() { # wait_for <url> <seconds> <label> [logfile]
 }
 
 AUDIT_LOG="$(mktemp)"; MCP_LOG="$(mktemp)"; UI_LOG="$(mktemp)"
-forward salesforce-mcp 8090:8081 "$AUDIT_LOG"      # audit and admin, private
-forward salesforce-mcp 18080:8080 "$MCP_LOG"       # MCP only, this is the one that gets published
+forward commerce-mcp 8090:8081 "$AUDIT_LOG"      # audit and admin, private
+forward commerce-mcp 18080:8080 "$MCP_LOG"       # MCP only, this is the one that gets published
 wait_for http://localhost:8090/catalog 20 "the audit port-forward (localhost:8090)" "$AUDIT_LOG" || {
   echo "Is another process using port 8090?  lsof -nP -iTCP:8090 -sTCP:LISTEN"; exit 1; }
 wait_for http://localhost:18080/healthz 20 "the MCP port-forward (localhost:18080)" "$MCP_LOG" || exit 1
@@ -122,8 +122,8 @@ if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "$URL/mcp" ]; then
      was  $PREVIOUS
      now  $URL/mcp
    Anything still using the old URL fails until you update it, in two places:
-     1. the Salesforce MCP proxy: Console, MCP Servers > Salesforce MCP > Manage Endpoints
-     2. the ungoverned agent: Deploy > Configure, SF_MCP_URL, then redeploy
+     1. the Orders & Payments MCP proxy: Console, MCP Servers > Orders & Payments > Manage Endpoints
+     2. the ungoverned agent: Deploy > Configure, COMMERCE_MCP_URL, then redeploy
 MSG
 fi
 echo

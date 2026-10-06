@@ -144,3 +144,15 @@ body.dash.compact { padding: 12px 14px; gap: 12px; }
 
 @media (max-width: 1250px) { .kpis:not(.x) { grid-template-columns: repeat(3, 1fr); } .mid { grid-template-columns: 1fr 1fr; } .stack { grid-column: 1 / -1; } }
 @media (max-width: 720px) { .kpis { grid-template-columns: repeat(2, 1fr); } .mid { grid-template-columns: 1fr; } body.dash { overflow: auto; height: auto; } .feedwrap { min-height: 420px; } }
+
+/* ---------------------------------------------------------------- refund-agent scenario additions */
+.tile.slate { --c: #8b9cc8; }
+.ls.c b { color: var(--cyan); }
+.layer[data-l="eval"] .n { background: rgba(244, 114, 182, .22); color: var(--pink); }
+.layer.hit-eval { border-color: var(--pink); box-shadow: 0 0 16px rgba(244, 114, 182, .4); }
+.compact .stack .layers { grid-template-columns: repeat(5, 1fr); }
+.card.k-payout { --c: var(--red); animation: slideIn .45s cubic-bezier(.2, .9, .2, 1), shake .55s .1s, edge 1.3s .5s 3; }
+.card.k-rejected { --c: var(--orange); }
+.card.k-escalated { --c: var(--cyan); }
+.card.k-refund { --c: var(--green); }
+.card.k-refund .title { font-weight: 600; }

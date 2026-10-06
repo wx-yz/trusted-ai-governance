@@ -1,21 +1,22 @@
 {
   "read": [
-    "get_my_quota_attainment",
-    "list_my_accounts",
-    "get_account_insights",
-    "list_my_opportunities",
-    "get_my_pipeline_summary",
-    "get_my_commission_estimate"
+    "get_my_profile",
+    "list_my_orders",
+    "get_order",
+    "get_refund_policy",
+    "list_my_cases",
+    "get_case"
   ],
-  "team": [
-    "list_sales_reps",
-    "get_rep_quota_attainment",
-    "list_rep_opportunities",
-    "get_rep_compensation",
-    "get_team_leaderboard",
-    "search_accounts"
+  "escalate": [
+    "create_escalation"
   ],
-  "write": [
-    "update_opportunity"
+  "refund": [
+    "issue_refund"
+  ],
+  "approve": [
+    "approve_exception_refund"
+  ],
+  "credit": [
+    "issue_store_credit"
   ]
 }

@@ -1,4 +1,4 @@
-"""How the agent proves who it is to the Salesforce MCP server.
+"""How the agent proves who it is to the Orders & Payments MCP server.
 
 AgentID mode follows the Agent Manager guide: mint an OAuth 2.0 client_credentials token with the
 injected credential, scoped to the MCP proxy with the RFC 8707 "resource" parameter, cache it per
@@ -51,9 +51,9 @@ class AgentIdentity:
 
     async def auth_headers(self, resource: str) -> dict[str, str]:
         cfg = self.cfg
-        if cfg.sf_mcp_auth == "apikey":
-            return {"X-API-Key": cfg.sf_mcp_api_key}
-        if cfg.sf_mcp_auth == "agentid":
+        if cfg.mcp_auth == "apikey":
+            return {"X-API-Key": cfg.mcp_api_key}
+        if cfg.mcp_auth == "agentid":
             return {"Authorization": f"Bearer {await self._token(resource)}"}
         return {}
 
@@ -81,18 +81,18 @@ class AgentIdentity:
 
     def describe(self) -> dict[str, Any]:
         cfg = self.cfg
-        if cfg.sf_mcp_auth == "agentid":
+        if cfg.mcp_auth == "agentid":
             return {
                 "type": "AgentID",
                 "client_id": cfg.agentid_client_id,
                 "granted_scopes": self.granted_scopes,
                 "summary": "Own OAuth identity, scopes filtered by assigned roles",
             }
-        if cfg.sf_mcp_auth == "apikey":
+        if cfg.mcp_auth == "apikey":
             return {
                 "type": "shared-service-account",
                 "client_id": None,
                 "granted_scopes": ["full access"],
-                "summary": "Shared Salesforce integration key held by the agent",
+                "summary": "Shared payments integration key held by the agent",
             }
         return {"type": "none", "client_id": None, "granted_scopes": [], "summary": "No credential"}

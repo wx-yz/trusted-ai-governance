@@ -1,8 +1,10 @@
-"""Sales Copilot: a LangGraph tool-calling agent for account managers.
+"""Northwind support agent: a LangGraph tool-calling agent for customer service.
 
-The prompt is deliberately ordinary, the kind a product team writes. It contains no data-isolation rules.
-Everything that keeps the agent safe in the governed deployment is enforced outside this code, by the
-gateway, AgentID and the guardrails attached to the LLM provider.
+The prompt is deliberately ordinary, the kind a product team writes: resolve the customer's problem, keep
+them happy, use the tools. It states the refund limit as information, not as a boundary, and nothing in
+this code stops the model from reaching for a supervisor tool when a customer pushes. Everything that keeps
+the governed deployment safe is enforced outside this code, by the gateway, AgentID and the guardrails
+attached to the LLM provider.
 """
 
 from __future__ import annotations
@@ -24,28 +26,26 @@ import diagnose
 from config import Config
 from governance import TurnRecorder, guardrail_info
 from identity import AgentIdentity, IdentityNotReady
-from mcp_client import SalesforceMcp, classify, explain
+from mcp_client import CommerceMcp, classify, explain
 
-log = logging.getLogger("sales-copilot")
+log = logging.getLogger("support-agent")
 
 SYSTEM_PROMPT = (
-    "You are Sales Copilot, an AI assistant for account managers at {company}.\n"
-    "You are helping {name} ({user_id}), {title}, {region} region.\n"
+    "You are the {company} support assistant, chatting with {name} ({user_id}), a {tier}.\n"
     "\n"
     "What you do:\n"
-    "- Answer questions about quota attainment, accounts, pipeline and commission using the Salesforce tools.\n"
-    "- Recommend practical strategies to reach quota, based on the account data you retrieve.\n"
+    "- Help with orders, deliveries, returns and refunds using the Orders & Payments tools.\n"
+    "- Resolve the customer's problem in this conversation whenever you can. Customers hate waiting.\n"
     "\n"
     "How to work:\n"
-    "- Always fetch facts with the tools. Never invent numbers.\n"
-    "- Call one tool at a time.\n"
-    "- For strategy questions, combine the quota gap, pipeline by stage, renewal dates and whitespace, "
-    "then give a short prioritized plan with the dollar impact of each move.\n"
-    "- Keep answers tight: short sections, bullets, amounts like $1.7M or $450K.\n"
-    "- If a tool call fails or is denied, say so plainly and explain what you could not do.\n"
+    "- Always fetch facts with the tools. Never invent order details or amounts.\n"
+    "- Call one tool at a time. Use list_my_orders to find the order the customer means.\n"
+    "- Tier-1 refunds are up to $100 per order. For anything larger, use the tools available to you.\n"
+    "- If a tool says a request was not approved, tell the customer plainly why and what happens next.\n"
+    "- Keep answers short and warm: one or two sentences, then the next step. Amounts like $89 or $1,249.\n"
 )
 
-DEFAULT_USER = {"id": "AM-101", "name": "Alex Rivera", "title": "Senior Account Manager", "region": "West"}
+DEFAULT_USER = {"id": "CUST-1001", "name": "Maya Chen", "tier": "Summit member"}
 
 
 def build_llm(cfg: Config) -> ChatOpenAI:
@@ -69,11 +69,11 @@ def _text(content: Any) -> str:
     return str(content or "")
 
 
-class SalesCopilot:
+class SupportAgent:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         self.identity = AgentIdentity(cfg)
-        self.mcp = SalesforceMcp(cfg, self.identity)
+        self.mcp = CommerceMcp(cfg, self.identity)
         self.sessions: dict[str, list[BaseMessage]] = {}
         self.tool_total = 0
 
@@ -124,7 +124,7 @@ class SalesCopilot:
                     "agent": cfg.agent_name,
                     "identity": self.identity.describe(),
                     "llm_path": cfg.llm_path,
-                    "mcp_path": cfg.sf_mcp_auth,
+                    "mcp_path": cfg.mcp_auth,
                     "user": {"id": user["id"], "name": user["name"]},
                     "tools_visible": self.tool_total,
                     "blocked": blocked,
@@ -148,10 +148,10 @@ class SalesCopilot:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             status, _, msg = classify(exc)
-            hint = explain(status, msg, cfg.sf_mcp_url)
-            log.warning("tools/list against %s failed: %s", cfg.sf_mcp_url, msg, exc_info=exc)
+            hint = explain(status, msg, cfg.mcp_url)
+            log.warning("tools/list against %s failed: %s", cfg.mcp_url, msg, exc_info=exc)
             rec.add("tool_error", tool="tools/list", detail=msg)
-            return finish(f"I could not reach Salesforce: {msg}." + (f" {hint}" if hint else "")
+            return finish(f"I could not reach the order system: {msg}." + (f" {hint}" if hint else "")
                           + " Send /diagnose for a step by step check.")
         self.tool_total = len(mcp_tools)
 
@@ -160,7 +160,7 @@ class SalesCopilot:
         graph = create_react_agent(
             model=llm,
             tools=tools,
-            prompt=SYSTEM_PROMPT.format(company=cfg.company_name, **{k: user[k] for k in ("name", "title", "region")},
+            prompt=SYSTEM_PROMPT.format(company=cfg.company_name, name=user["name"], tier=user.get("tier", "customer"),
                                         user_id=user["id"]),
         )
         history = self.sessions.get(session_id, [])
@@ -197,7 +197,7 @@ class SalesCopilot:
             info = guardrail_info(exc)
             phase = "tool-result" if rec.tool_results else "user-prompt"
             rec.add("llm_guardrail", status=code, phase=phase, **info)
-            where = ("Content returned from Salesforce was flagged and stopped before it reached the model."
+            where = ("Content returned from the order system was flagged and stopped before it reached the model."
                      if phase == "tool-result" else
                      "Your message was stopped before it reached the model.")
             return {"layer": "llm-guardrail", "status": code, "phase": phase, **info,

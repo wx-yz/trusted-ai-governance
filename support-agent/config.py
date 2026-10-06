@@ -1,11 +1,11 @@
-"""Runtime configuration for Sales Copilot, read from environment variables.
+"""Runtime configuration for the support agent, read from environment variables.
 
 The same code runs as two different Agent Manager agents. What differs is configuration:
 
-* ungoverned: OPENAI_API_KEY and SF_MCP_API_KEY are set by hand. The agent holds both raw
-  credentials and talks to OpenAI and to the Salesforce MCP server directly.
+* ungoverned: OPENAI_API_KEY and COMMERCE_MCP_API_KEY are set by hand. The agent holds both raw
+  credentials and talks to OpenAI and to the Orders & Payments MCP server directly.
 * governed: Agent Manager injects LLM_PROVIDER_URL / LLM_PROVIDER_KEY (an LLM provider with
-  guardrails), SF_MCP_URL (an identity-secured MCP proxy) and the AMP_AGENTID_* credential.
+  guardrails), COMMERCE_MCP_URL (an identity-secured MCP proxy) and the AMP_AGENTID_* credential.
   The agent holds no upstream credential at all.
 """
 
@@ -30,9 +30,9 @@ class Config:
     llm_provider_url: str
     llm_provider_key: str
     openai_api_key: str
-    sf_mcp_url: str
-    sf_mcp_auth: str  # "agentid" | "apikey" | "none"
-    sf_mcp_api_key: str
+    mcp_url: str
+    mcp_auth: str  # "agentid" | "apikey" | "none"
+    mcp_api_key: str
     agentid_client_id: str
     agentid_client_secret: str
     agentid_token_endpoint: str
@@ -43,16 +43,16 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        api_key = _env("SF_MCP_API_KEY")
+        api_key = _env("COMMERCE_MCP_API_KEY")
         client_id = _env("AMP_AGENTID_CLIENT_ID")
         use_provider = _env("USE_LLM_PROVIDER", "false").lower() == "true"
-        auth = _env("SF_MCP_AUTH").lower()
+        auth = _env("COMMERCE_MCP_AUTH").lower()
         if auth not in ("agentid", "apikey", "none"):
             auth = "apikey" if api_key else ("agentid" if client_id else "none")
         return cls(
-            agent_name=_env("AGENT_NAME", "sales-copilot"),
+            agent_name=_env("AGENT_NAME", "support-agent"),
             agent_version=_env("AGENT_VERSION", "dev"),
-            company_name=_env("COMPANY_NAME", "Northwind Cloud"),
+            company_name=_env("COMPANY_NAME", "Northwind Outfitters"),
             model=_env("OPENAI_MODEL", "gpt-4o-mini"),
             use_llm_provider=use_provider,
             # Agent Manager injects the provider URL and key under names chosen on the agent's LLM configuration.
@@ -61,9 +61,9 @@ class Config:
             llm_provider_url=_env("LLM_PROVIDER_URL") or (_env("OPENAI_URL") if use_provider else ""),
             llm_provider_key=_env("LLM_PROVIDER_KEY") or (_env("OPENAI_API_KEY") if use_provider else ""),
             openai_api_key=_env("OPENAI_API_KEY"),
-            sf_mcp_url=_env("SF_MCP_URL"),
-            sf_mcp_auth=auth,
-            sf_mcp_api_key=api_key,
+            mcp_url=_env("COMMERCE_MCP_URL"),
+            mcp_auth=auth,
+            mcp_api_key=api_key,
             agentid_client_id=client_id,
             agentid_client_secret=_env("AMP_AGENTID_CLIENT_SECRET"),
             agentid_token_endpoint=_env("AMP_AGENTID_TOKEN_ENDPOINT"),
@@ -91,12 +91,12 @@ class Config:
                            "LLM_PROVIDER_URL and LLM_PROVIDER_KEY, and redeploy.")
         elif not self.openai_api_key:
             out.append("OPENAI_API_KEY is not set.")
-        if not self.sf_mcp_url:
-            out.append("SF_MCP_URL is not set (attach the Salesforce MCP server as a tool configuration, "
+        if not self.mcp_url:
+            out.append("COMMERCE_MCP_URL is not set (attach the Orders & Payments MCP server as a tool configuration, "
                        "or set it by hand).")
-        if self.sf_mcp_auth == "apikey" and not self.sf_mcp_api_key:
-            out.append("SF_MCP_AUTH=apikey but SF_MCP_API_KEY is not set.")
-        if self.sf_mcp_auth == "agentid" and not (
+        if self.mcp_auth == "apikey" and not self.mcp_api_key:
+            out.append("COMMERCE_MCP_AUTH=apikey but COMMERCE_MCP_API_KEY is not set.")
+        if self.mcp_auth == "agentid" and not (
             self.agentid_client_id and self.agentid_client_secret and self.agentid_token_endpoint
         ):
             out.append("AgentID credentials (AMP_AGENTID_*) are not provisioned yet. "

@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: governance-console
-  namespace: sales-demo
+  namespace: support-demo
   labels: { app: governance-console }
 spec:
   replicas: 1
@@ -30,7 +30,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: governance-console
-  namespace: sales-demo
+  namespace: support-demo
 spec:
   selector: { app: governance-console }
   ports:
