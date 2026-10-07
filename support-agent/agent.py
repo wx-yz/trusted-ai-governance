@@ -21,6 +21,7 @@ from langchain_core.tools import StructuredTool
 from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
+from opentelemetry import trace
 
 import diagnose
 from config import Config
@@ -28,8 +29,10 @@ from governance import TurnRecorder, guardrail_info
 from identity import AgentIdentity, IdentityNotReady
 from mcp_client import CommerceMcp, classify, explain
 from session_trace import SessionTracer
+from trace_names import MONEY_TOOLS, tool_title, tool_verdict, turn_outcome
 
 log = logging.getLogger("support-agent")
+_tracer = trace.get_tracer("support-agent")
 
 SYSTEM_PROMPT = (
     "You are the {company} support assistant, chatting with {name} ({user_id}), a {tier}.\n"
@@ -88,15 +91,31 @@ class SupportAgent:
             async def run(_name: str = t.name, **kwargs: Any) -> str:
                 call_id = uuid.uuid4().hex[:12]
                 started = time.time()
-                outcome = await self.mcp.call_tool(_name, kwargs, user["id"], call_id)
-                ms = int((time.time() - started) * 1000)
-                if outcome.denied:
-                    rec.add("tool_denied", tool=_name, call_id=call_id, args=kwargs, status=outcome.status,
-                            layer="AgentID", required_scope=outcome.required_scope, detail=outcome.detail, ms=ms)
-                elif not outcome.ok:
-                    rec.add("tool_error", tool=_name, call_id=call_id, args=kwargs, detail=outcome.detail, ms=ms)
-                else:
-                    rec.add("tool_allowed", tool=_name, call_id=call_id, args=kwargs, ms=ms)
+                # Our own span inside the instrumented execute_tool span: same call, titled with its payments outcome.
+                with _tracer.start_as_current_span(tool_title(_name, kwargs), attributes={
+                        "tool.name": _name, "tool.call_id": call_id, "tool.arguments": json.dumps(kwargs, default=str)[:1000],
+                        "payments.order_id": kwargs.get("order_id") or "", "customer.id": user["id"]}) as span:
+                    outcome = await self.mcp.call_tool(_name, kwargs, user["id"], call_id)
+                    ms = int((time.time() - started) * 1000)
+                    if outcome.denied:
+                        rec.add("tool_denied", tool=_name, call_id=call_id, args=kwargs, status=outcome.status,
+                                layer="AgentID", required_scope=outcome.required_scope, detail=outcome.detail, ms=ms)
+                        span.update_name(tool_title(_name, kwargs, denied=True, status=outcome.status, scope=outcome.required_scope))
+                        span.set_attributes({"tool.outcome": "denied", "http.status_code": outcome.status or 403,
+                                             "governance.required_scope": outcome.required_scope or ""})
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, f"blocked at gateway (HTTP {outcome.status})"))
+                    elif not outcome.ok:
+                        rec.add("tool_error", tool=_name, call_id=call_id, args=kwargs, detail=outcome.detail, ms=ms)
+                        span.update_name(tool_title(_name, kwargs, error=outcome.detail or "failed"))
+                        span.set_attribute("tool.outcome", "error")
+                        span.set_status(trace.Status(trace.StatusCode.ERROR, (outcome.detail or "failed")[:200]))
+                    else:
+                        verdict, reason = tool_verdict(_name, outcome.text)
+                        rec.add("tool_allowed", tool=_name, call_id=call_id, args=kwargs, ms=ms, verdict=verdict, reason=reason)
+                        span.update_name(tool_title(_name, kwargs, verdict=verdict, reason=reason))
+                        span.set_attributes({"tool.outcome": verdict, "tool.reason": reason})
+                        if _name in MONEY_TOOLS and verdict == "approved":
+                            span.set_attribute("payments.amount_usd", float(kwargs.get("amount") or 0))
                 rec.tool_results += 1
                 return outcome.text  # always a plain string: gateway guardrails inspect message content as text
 
@@ -116,10 +135,10 @@ class SupportAgent:
             return await self._turn(message, session_id, context)
         user = {**DEFAULT_USER, **((context or {}).get("user") or {})}
         attrs = {"session.id": session_id, "agent.name": self.cfg.agent_name, "customer.id": user["id"]}
-        with self.traces.turn(session_id, message, attrs) as turn:
+        with self.traces.turn(session_id, message, attrs, customer=f"{user['name']} ({user['id']})") as turn:
             result = await self._turn(message, session_id, context)
             gov = result["governance"]
-            turn.finish(result["response"],
+            turn.finish(result["response"], outcome=turn_outcome(gov["events"]),
                         **{"governance.blocked_layer": (gov.get("blocked") or {}).get("layer"),
                            "governance.denied_tools": ",".join(e["tool"] for e in gov["events"] if e["type"] == "tool_denied") or None})
             gov["trace_id"] = turn.trace_id
@@ -160,7 +179,11 @@ class SupportAgent:
 
         # Discover tools. The gateway decides what this identity is allowed to see and call.
         try:
-            mcp_tools = await self.mcp.list_tools(user["id"], uuid.uuid4().hex[:12])
+            # The span records the exception and an error status by itself if discovery fails.
+            with _tracer.start_as_current_span("Discover Orders & Payments tools") as span:
+                mcp_tools = await self.mcp.list_tools(user["id"], uuid.uuid4().hex[:12])
+                span.update_name(f"Discover Orders & Payments tools → {len(mcp_tools)} visible")
+                span.set_attribute("tools.visible", ",".join(t.name for t in mcp_tools))
         except BaseException as exc:  # noqa: BLE001
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise

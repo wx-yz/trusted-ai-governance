@@ -383,7 +383,18 @@ Results: the monitor dashboard (radar of mean scores, time series, run history) 
 
 ### Traces: one per chat session
 
-Each chat session is a single trace, not one trace per message. The first message opens a `conversation` root span, every message is a `turn N` span under it, and the LLM, LangGraph and MCP spans nest under their turn. Every turn carries `gen_ai.conversation.id` set to the session id. The demo UI starts a new session, so a new trace, on every page load and on **↺**. Try It sends no session id, so each Try It message is its own trace. The code is in [`support-agent/session_trace.py`](support-agent/session_trace.py).
+Each chat session is a single trace, not one trace per message. The first message opens the root span, every message is a turn span under it, and the LLM, LangGraph and MCP spans nest under their turn. The spans the agent creates are titled with what happened, so the trace list and the trace view read on their own:
+
+```
+Support chat · Maya Chen (CUST-1001) · "My $89 water bottle arrived cracked. Please refund it."
+  Turn 2 · payments refused $340 refund · gateway denied approve_exception_refund · escalated $340 to a supervisor · "My $340 jacket…"
+    Discover Orders & Payments tools → 10 visible
+    issue_refund ORD-1031 $340 → refused by payments: $340 exceeds the $100 Tier-1 auto-refund limit for this order.
+    approve_exception_refund ORD-1031 $340 → blocked at gateway (HTTP 403, needs commerce:approve)
+    create_escalation ORD-1031 $340 → case CASE-92 opened for a supervisor
+```
+
+Each tool-call span sits inside the platform's own `execute_tool …` span, and the turn also carries the outcome as the `turn.outcome` attribute. The auto-instrumented spans keep their names, because the platform and the refund-policy evaluator read them. The titles are built in [`support-agent/trace_names.py`](support-agent/trace_names.py). Every turn carries `gen_ai.conversation.id` set to the session id. The demo UI starts a new session, so a new trace, on every page load and on **↺**. Try It sends no session id, so each Try It message is its own trace. The code is in [`support-agent/session_trace.py`](support-agent/session_trace.py).
 
 Two consequences:
 

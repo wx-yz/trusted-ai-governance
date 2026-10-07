@@ -417,31 +417,132 @@ def session_trace_check() -> None:
     st = SessionTracer()
     tids = []
     for i, (sid, msg) in enumerate([("A", "first"), ("A", "second"), ("A", "third"), ("B", "other session")]):
-        with st.turn(sid, msg, {"customer.id": "CUST-1001"}) as t:
+        with st.turn(sid, msg, {"customer.id": "CUST-1001"}, customer="Maya Chen (CUST-1001)") as t:
             with other.start_as_current_span(f"llm call {i}"):  # what Traceloop records inside a turn
                 pass
-            t.finish(f"reply {i}")
+            t.finish(f"reply {i}", outcome="refunded $89" if i == 1 else None)
             tids.append(t.trace_id)
     spans = exp.get_finished_spans()
     by_name = {s.name: s for s in spans}
     check("all turns of a session share one trace id", tids[0] == tids[1] == tids[2] and tids[0] is not None)
     check("a new session gets a new trace id", tids[3] != tids[0])
     roots = [s for s in spans if s.parent is None]
-    check("each session has exactly one root span, named conversation", len(roots) == 2 and all(r.name == "conversation" for r in roots))
+    check("each session has exactly one root span, titled with the customer and the opening message",
+          sorted(r.name for r in roots) == ['Support chat · Maya Chen (CUST-1001) · "first"',
+                                            'Support chat · Maya Chen (CUST-1001) · "other session"'], str([r.name for r in roots]))
     root_a = next(r for r in roots if format(r.context.trace_id, "032x") == tids[0])
-    turns_a = [s for s in spans if s.name.startswith("turn ") and s.parent is not None and s.parent.span_id == root_a.context.span_id]
-    check("turns 1 to 3 are children of the conversation root", sorted(s.name for s in turns_a) == ["turn 1", "turn 2", "turn 3"])
+    turns_a = [s for s in spans if s.name.startswith("Turn ") and s.parent is not None and s.parent.span_id == root_a.context.span_id]
+    check("turns 1 to 3 are children of the root, titled with the message and, when given, the outcome",
+          sorted(s.name for s in turns_a) == ['Turn 1 · "first"', 'Turn 2 · refunded $89 · "second"', 'Turn 3 · "third"'],
+          str(sorted(s.name for s in turns_a)))
     llm1 = by_name["llm call 1"]
-    check("spans recorded during a turn nest under that turn", llm1.parent is not None and llm1.parent.span_id == next(s for s in turns_a if s.name == "turn 2").context.span_id)
+    check("spans recorded during a turn nest under that turn", llm1.parent is not None and llm1.parent.span_id == next(s for s in turns_a if s.name.startswith("Turn 2")).context.span_id)
     check("the root carries the first exchange as the trace input and output",
           "first" in root_a.attributes["traceloop.entity.input"] and "reply 0" in root_a.attributes["traceloop.entity.output"])
     check("every turn is tagged with gen_ai.conversation.id", all(s.attributes.get("gen_ai.conversation.id") == "A" for s in turns_a))
+    check("the turn outcome is also an attribute", by_name['Turn 2 · refunded $89 · "second"'].attributes.get("turn.outcome") == "refunded $89")
 
+
+def trace_names_check() -> None:
+    print("\nSpan titles")
+    sys.path.insert(0, str(ROOT / "support-agent"))
+    from trace_names import tool_title, tool_verdict, turn_outcome  # noqa: E402
+    refused = json.dumps({"approved": False, "reason": "$340 exceeds the $100 Tier-1 auto-refund limit for this order."})
+    check("a refusal from payments is read from the tool result", tool_verdict("issue_refund", refused) == ("refused", "$340 exceeds the $100 Tier-1 auto-refund limit for this order."))
+    check("an escalation carries its case id", tool_verdict("create_escalation", json.dumps({"escalated": True, "case_id": "CASE-91"})) == ("escalated", "CASE-91"))
+    check("a refused refund call is titled with order, amount and reason",
+          tool_title("issue_refund", {"order_id": "ORD-1031", "amount": 340}, verdict="refused", reason="$340 exceeds the $100 Tier-1 auto-refund limit for this order.")
+          == "issue_refund ORD-1031 $340 → refused by payments: $340 exceeds the $100 Tier-1 auto-refund limit for this order.")
+    check("a gateway denial is titled with the status and the missing scope",
+          tool_title("approve_exception_refund", {"order_id": "ORD-1031", "amount": 340}, denied=True, status=403, scope="commerce:approve")
+          == "approve_exception_refund ORD-1031 $340 → blocked at gateway (HTTP 403, needs commerce:approve)")
+    ev = lambda t, tool, v=None, **a: {"type": t, "tool": tool, "verdict": v, "args": a}  # noqa: E731
+    check("ungoverned jacket: refusal, then a self-approved exception",
+          turn_outcome([ev("tool_allowed", "list_my_orders", "ok"), ev("tool_allowed", "issue_refund", "refused", order_id="ORD-1031", amount=340),
+                        ev("tool_allowed", "approve_exception_refund", "approved", order_id="ORD-1031", amount=340)])
+          == "payments refused $340 refund · self-approved $340 exception (no human)")
+    check("governed jacket: refusal, gateway denial, escalation",
+          turn_outcome([ev("tool_allowed", "issue_refund", "refused", amount=340), ev("tool_denied", "approve_exception_refund", amount=340),
+                        ev("tool_allowed", "create_escalation", "escalated", requested_amount=340)])
+          == "payments refused $340 refund · gateway denied approve_exception_refund · escalated $340 to a supervisor")
+    check("a guardrail block names the guardrail",
+          turn_outcome([{"type": "llm_guardrail", "guardrail": "REGEX_GUARDRAIL", "phase": "user-prompt"}]) == "guardrail REGEX_GUARDRAIL blocked the model call")
+    check("a read-only turn names the tools it used", turn_outcome([ev("tool_allowed", "list_my_orders", "ok"), ev("tool_allowed", "get_order", "ok")])
+          == "answered using list_my_orders, get_order")
+    check("a failed model call is visible in the title", turn_outcome([{"type": "agent_error", "detail": "LLM HTTP 404: route not found"}])
+          == "agent error: LLM HTTP 404: route not found")
+
+
+def traced_agent_check() -> None:
+    """Run the real agent in process, with an in-memory OpenTelemetry SDK, and read the span titles it produces."""
+    print("\nSpan titles from the real agent (local stack, scripted LLM)")
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    except ImportError:
+        print("  SKIP  opentelemetry-sdk is not installed (pip install opentelemetry-sdk)")
+        return
+    import asyncio
+    sys.path.insert(0, str(ROOT / "support-agent"))
+    exp = InMemorySpanExporter()
+    if not hasattr(trace.get_tracer_provider(), "add_span_processor"):
+        trace.set_tracer_provider(TracerProvider())
+    trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(exp))
+    st = Stack()
+    try:
+        st.start([PY, "server.py"], {"PORT": str(st.mcp)}, ROOT / "commerce-mcp")
+        st.wait(f"http://127.0.0.1:{st.mcp}/healthz")
+        st.start([PY, "tests/fakes.py"], {"FAKES_PORT": str(st.fakes), "FAKE_MCP_UPSTREAM": f"http://127.0.0.1:{st.mcp}"})
+        st.wait(f"http://127.0.0.1:{st.fakes}/fake/health")
+        f = f"http://127.0.0.1:{st.fakes}"
+        lanes = {
+            "ungoverned": {"OPENAI_API_KEY": "x", "OPENAI_BASE_URL": f"{f}/direct/v1", "COMMERCE_MCP_URL": f"http://127.0.0.1:{st.mcp}/mcp",
+                           "COMMERCE_MCP_API_KEY": "commerce-direct-demo-key", "AGENT_NAME": "support-agent-ungoverned"},
+            "governed": {"USE_LLM_PROVIDER": "true", "LLM_PROVIDER_URL": f"{f}/llm/v1", "LLM_PROVIDER_KEY": "fake-llm-key",
+                         "COMMERCE_MCP_URL": f"{f}/commerce/mcp", "COMMERCE_MCP_AUTH": "agentid", "AMP_AGENTID_CLIENT_ID": "agent-test",
+                         "AMP_AGENTID_CLIENT_SECRET": "s", "AMP_AGENTID_TOKEN_ENDPOINT": f"{f}/oauth2/token",
+                         "AMP_AGENTID_SCOPES": "commerce:read commerce:escalate commerce:refund commerce:approve commerce:credit",
+                         "AGENT_NAME": "support-agent"},
+        }
+        from agent import SupportAgent  # noqa: E402
+        from config import Config  # noqa: E402
+        names: dict[str, list[str]] = {}
+        for lane, env in lanes.items():
+            httpx.post(f"http://127.0.0.1:{st.mcp}/admin/reset")
+            saved = dict(os.environ)
+            os.environ.update(env)  # kept for the whole turn: the OpenAI client reads OPENAI_BASE_URL when it is built
+            try:
+                ag = SupportAgent(Config.from_env())
+                exp.clear()
+                asyncio.run(ag.chat(JACKET, f"trace-{lane}", {"user": {"id": "CUST-1001", "name": "Maya Chen"}}))
+            finally:
+                os.environ.clear(); os.environ.update(saved)
+            names[lane] = [s.name for s in exp.get_finished_spans()]
+        u, g = names["ungoverned"], names["governed"]
+        check("ungoverned: the trace root names the customer and the request",
+              any(n.startswith('Support chat · Maya Chen (CUST-1001) · "My $340 jacket') for n in u), str(u))
+        check("ungoverned: the turn title shows the self-approved exception",
+              any(n.startswith("Turn 1 · ") and "self-approved $340 exception (no human)" in n for n in u), str([n for n in u if n.startswith("Turn")]))
+        check("ungoverned: the exception call is titled as approved by the agent",
+              "approve_exception_refund ORD-1031 $340 → exception approved by the agent, no human" in u)
+        check("tool discovery is titled with the number of visible tools", "Discover Orders & Payments tools → 10 visible" in u)
+        check("governed: the refused refund is titled with the payments reason",
+              any(n.startswith("issue_refund ORD-1031 $340 → refused by payments: ") for n in g), str(g))
+        check("governed: the denied supervisor call is titled with HTTP 403",
+              any(n.startswith("approve_exception_refund ORD-1031 $340 → blocked at gateway (HTTP 403") for n in g), str(g))
+        check("governed: the turn title shows the escalation and no money moved",
+              any(n.startswith("Turn 1 · ") and "escalated" in n and "no human" not in n for n in g), str([n for n in g if n.startswith("Turn")]))
+    finally:
+        st.down()
 
 if __name__ == "__main__":
     static_checks()
     session_trace_check()
+    trace_names_check()
     split_port_check()
     e2e()
+    traced_agent_check()  # last: it closes its event loop, and LangChain caches an HTTP client bound to it
     print(f"\n{'ALL CHECKS PASSED' if not failures else str(len(failures)) + ' FAILED: ' + '; '.join(failures)}")
     sys.exit(1 if failures else 0)
