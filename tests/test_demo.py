@@ -397,8 +397,50 @@ def split_port_check() -> None:
         st.down()
 
 
+def session_trace_check() -> None:
+    print("\nOne trace per chat session")
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    except ImportError:
+        print("  SKIP  opentelemetry-sdk is not installed (pip install opentelemetry-sdk)")
+        return
+    sys.path.insert(0, str(ROOT / "support-agent"))
+    from session_trace import SessionTracer  # noqa: E402
+    exp = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exp))
+    trace.set_tracer_provider(provider)
+    other = trace.get_tracer("auto-instrumentation-stand-in")
+    st = SessionTracer()
+    tids = []
+    for i, (sid, msg) in enumerate([("A", "first"), ("A", "second"), ("A", "third"), ("B", "other session")]):
+        with st.turn(sid, msg, {"customer.id": "CUST-1001"}) as t:
+            with other.start_as_current_span(f"llm call {i}"):  # what Traceloop records inside a turn
+                pass
+            t.finish(f"reply {i}")
+            tids.append(t.trace_id)
+    spans = exp.get_finished_spans()
+    by_name = {s.name: s for s in spans}
+    check("all turns of a session share one trace id", tids[0] == tids[1] == tids[2] and tids[0] is not None)
+    check("a new session gets a new trace id", tids[3] != tids[0])
+    roots = [s for s in spans if s.parent is None]
+    check("each session has exactly one root span, named conversation", len(roots) == 2 and all(r.name == "conversation" for r in roots))
+    root_a = next(r for r in roots if format(r.context.trace_id, "032x") == tids[0])
+    turns_a = [s for s in spans if s.name.startswith("turn ") and s.parent is not None and s.parent.span_id == root_a.context.span_id]
+    check("turns 1 to 3 are children of the conversation root", sorted(s.name for s in turns_a) == ["turn 1", "turn 2", "turn 3"])
+    llm1 = by_name["llm call 1"]
+    check("spans recorded during a turn nest under that turn", llm1.parent is not None and llm1.parent.span_id == next(s for s in turns_a if s.name == "turn 2").context.span_id)
+    check("the root carries the first exchange as the trace input and output",
+          "first" in root_a.attributes["traceloop.entity.input"] and "reply 0" in root_a.attributes["traceloop.entity.output"])
+    check("every turn is tagged with gen_ai.conversation.id", all(s.attributes.get("gen_ai.conversation.id") == "A" for s in turns_a))
+
+
 if __name__ == "__main__":
     static_checks()
+    session_trace_check()
     split_port_check()
     e2e()
     print(f"\n{'ALL CHECKS PASSED' if not failures else str(len(failures)) + ' FAILED: ' + '; '.join(failures)}")

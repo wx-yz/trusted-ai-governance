@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Northwind Outfitters</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'><circle cx='20' cy='20' r='19' fill='%231f2a24'/><path d='M7 28 L16 14 L21 21 L25 16 L33 28 Z' fill='%23f3c27f'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="css/store.css">
+</head>
+<body>
+  <div class="announce">Free shipping on orders over $75 · Summit members earn 2× points through Oct 31</div>
+
+  <header class="topbar">
+    <div class="wrap topbar-in">
+      <a class="brandmark" href="#/" aria-label="Northwind Outfitters home"><span id="logo"></span><span>Northwind<em>Outfitters</em></span></a>
+      <nav class="mainnav" id="mainnav">
+        <a href="#/shop/new">New</a><a href="#/shop/hike">Hike</a><a href="#/shop/camp">Camp</a><a href="#/shop/run">Run</a><a href="#/shop/tech">Trail tech</a><a href="#/shop/sale" class="sale">Sale</a>
+      </nav>
+      <div class="tools">
+        <label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg><input placeholder="Search gear" aria-label="Search"></label>
+        <a class="acct" href="#/account" title="My account">
+          <span class="ava" id="ava">MC</span>
+          <span class="acct-txt"><b id="acctName">Maya</b><small id="acctTier">Summit member</small></span>
+          <span class="credit" id="creditPill" hidden></span>
+        </a>
+        <button class="bagbtn" id="bagBtn" title="Bag"><svg viewBox="0 0 24 24"><path d="M5 8h14l-1.2 12H6.2z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg><span id="bagCount">0</span></button>
+      </div>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <footer class="foot">
+    <div class="wrap foot-in">
+      <div><div class="brandmark small"><span id="logo2"></span><span>Northwind<em>Outfitters</em></span></div>
+        <p>Gear for the long way round. Portland, Oregon since 1994.</p></div>
+      <div><h4>Help</h4><a href="#/account">Order status</a><a href="#" data-chat>Returns &amp; refunds</a><a href="#" data-chat>Chat with us</a></div>
+      <div><h4>Summit membership</h4><a href="#/account">Your benefits</a><a href="#/account">Points &amp; credit</a></div>
+      <div><h4>Our promise</h4><p class="muted">30-day returns on delivered items. Clearance is final sale.</p></div>
+    </div>
+    <div class="wrap fine">© 2026 Northwind Outfitters, a fictional retailer for a WSO2 Agent Manager demo.</div>
+  </footer>
+
+  <!-- support chat widget -->
+  <button class="launcher" id="launcher" aria-label="Chat with Northwind support">
+    <span class="l-ico"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg></span>
+    <span class="l-txt">Help</span>
+    <span class="l-dot" id="lDot" hidden></span>
+  </button>
+
+  <section class="chat" id="chat" aria-label="Northwind support chat" hidden>
+    <header class="c-head">
+      <div class="c-agent">
+        <span class="c-ava"><span id="cLogo"></span><i class="c-online"></i></span>
+        <div><b>Northwind Assistant</b><small>Orders, deliveries, returns · replies instantly</small></div>
+      </div>
+      <div class="c-actions">
+        <button class="c-ib" id="cNew" title="New conversation"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="c-ib" id="cClose" title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+    </header>
+    <div class="c-lane" id="cLane"></div>
+    <div class="c-body" id="cBody"></div>
+    <div class="c-foot">
+      <div class="c-sugg" id="cSugg"></div>
+      <div class="c-input">
+        <textarea id="cInput" rows="1" placeholder="Ask about an order, delivery or refund…"></textarea>
+        <button id="cSend" title="Send"><svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z"/></svg></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- presenter controls: not part of the shop, kept small and out of the way -->
+  <div class="dock" id="dock">
+    <button class="dock-gov" id="govBtn" role="switch" aria-checked="false" title="Switch between the ungoverned and the governed agent (G)">
+      <span class="dk-sw"></span><span class="dk-lbl">Governance <b id="govState">OFF</b></span>
+    </button>
+    <button class="dk-ib" id="resetBtn" title="Reset demo data and chats">↺</button>
+    <a class="dk-ib" href="dashboard.html" target="_blank" rel="noopener" title="Open the live governance dashboard">▤</a>
+    <button class="dk-ib" id="cfgBtn" title="Settings">⚙</button>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <div class="modal" id="cfgModal" hidden>
+    <div class="sheet">
+      <h2>Demo settings</h2>
+      <p>Shared with the governance console on this browser. The shop calls the agents directly, so each needs its invoke URL and API key.</p>
+      <fieldset><legend>Governed agent (Governance ON)</legend>
+        <label>Chat URL<input id="gUrl" placeholder="http://…/chat"></label>
+        <label>API key (X-API-Key)<input id="gKey"></label>
+      </fieldset>
+      <fieldset><legend>Ungoverned agent (Governance OFF)</legend>
+        <label>Chat URL<input id="uUrl" placeholder="http://…/chat"></label>
+        <label>API key (X-API-Key)<input id="uKey"></label>
+      </fieldset>
+      <fieldset><legend>Orders &amp; Payments audit feed</legend>
+        <label>Base URL<input id="aUrl" placeholder="http://localhost:8090"></label>
+      </fieldset>
+      <div class="sheet-actions"><button class="btn" id="cfgCancel">Cancel</button><button class="btn primary" id="cfgSave">Save</button></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="js/bus.js"></script>
+  <script src="js/store-art.js"></script>
+  <script src="js/store.js"></script>
+</body>
+</html>

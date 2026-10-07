@@ -50,7 +50,7 @@ mock server exposes one tool per level of authority, and the governed agent's ro
 |---|---|
 | `commerce-mcp/` | Real MCP server over fictional orders, cases and refunds: 10 tools in 5 scopes, plus an audit log with the dollars behind every call. |
 | `support-agent/` | The chat agent (LangGraph, `POST /chat`). |
-| `governance-console/` | Chat UI with a **Governance ON/OFF** switch and the live dashboard. Static site, no backend. |
+| `governance-console/` | Chat UI with a **Governance ON/OFF** switch and the live dashboard, plus `store.html`, the same chat as a support widget on a retail storefront. Static site, no backend. |
 | `deploy/` | Scripts, Kubernetes manifests, the guardrail values to paste and the custom evaluator source. |
 | `tests/` | `python tests/test_demo.py` runs every scenario locally with a scripted model. |
 
@@ -214,6 +214,15 @@ Click the **⚙** icon and fill in:
 
 **Save.** Settings live in this browser only. Agents are called straight from the browser, which works because Agent Manager allows browser calls (CORS) by default.
 
+### The storefront view
+
+<http://localhost:3000/store.html> shows the same demo as a customer sees it: the Northwind Outfitters shop with a support chat widget. It shares the settings and the Governance switch with the console, so nothing else to configure.
+
+- **Account** (Maya's avatar) lists her five orders. Each has a button that sends that order's demo prompt to the chat.
+- The order cards and the header follow the payments audit feed live: a refund marks the order *Refunded*, a supervisor exception shows *no supervisor* in red, store credit appears next to Maya's name, and an escalation shows *Supervisor review*.
+- Under each answer, a short list shows what the agent did: tools called, refunds the payments system refused, calls the gateway blocked (403), and guardrail stops.
+- The dark pill at the bottom left is for the presenter: Governance switch (or press **G**), **↺** reset, **▤** dashboard in a new tab, **⚙** settings.
+
 > **Checkpoint:** the dashboard on the right shows a green dot and *Payments audit feed · live*.
 
 ## Step 7. Smoke test
@@ -248,7 +257,7 @@ Wait for the build to show **Completed** before you deploy.
 
 1. Keep terminal 2 (`expose-mcp.sh`) running: it serves the UI, the audit feed and the tunnel. If you restarted it, the tunnel URL changed, see the troubleshooting row below.
 2. Check <http://localhost:3000> loads and the dashboard shows the green *audit feed · live* dot.
-3. Run all six chips in both lanes once (a rehearsal) at least 10 minutes before you present, so the monitors have scored traces to show. Then press **↺** to reset the data, chat and dashboard, and start with Governance OFF. Reset clears the demo dashboard and the mock ledger, not the Agent Manager traces or scores.
+3. Run all six chips in both lanes once (a rehearsal) at least 10 minutes before you present, then run `./deploy/rescore-sessions.sh` so every turn of those sessions is scored (see *Traces* below). Then press **↺** to reset the data, chat and dashboard, and start with Governance OFF. Reset clears the demo dashboard and the mock ledger, not the Agent Manager traces or scores.
 4. **Pop out** on the dashboard opens it in its own window for a second screen.
 
 ## Optional: a tunnel URL that never changes
@@ -371,6 +380,15 @@ More in [`support-agent/README.md`](support-agent/README.md) and [`commerce-mcp/
 | Monitor `refund-quality` | each agent › Evaluation | Continuous, every 5 minutes, sampling 100%. Evaluators: the custom one, plus built-in **Groundedness** (claims match tool results, so a promised refund that was never issued scores low), **Tone** (context: customer support) and **Instruction Following** (includes an injection check against instructions found in tool outputs). LLM-judge evaluators use the `shared-openai` provider. |
 
 Results: the monitor dashboard (radar of mean scores, time series, run history) and a **Score** column plus a **Scores** tab on every trace under Observability › Traces.
+
+### Traces: one per chat session
+
+Each chat session is a single trace, not one trace per message. The first message opens a `conversation` root span, every message is a `turn N` span under it, and the LLM, LangGraph and MCP spans nest under their turn. Every turn carries `gen_ai.conversation.id` set to the session id. The demo UI starts a new session, so a new trace, on every page load and on **↺**. Try It sends no session id, so each Try It message is its own trace. The code is in [`support-agent/session_trace.py`](support-agent/session_trace.py).
+
+Two consequences:
+
+- **Trace list.** A trace's input, output and start time come from its root span, so the list shows the session's first exchange and when the session started. Open the trace to see every turn.
+- **Monitors.** A continuous monitor picks traces by start time. A session still in progress when the monitor runs is scored with the turns it had then, and later turns are not scored. After a rehearsal, run `./deploy/rescore-sessions.sh` (default: sessions from the last 60 minutes, `MINUTES=20` to change). It creates a one-off "past traces" monitor on each agent that scores the finished sessions. A side benefit: the refund-policy evaluator now sees every refund in the session, so refunds split across several messages are caught.
 
 ### What was tested
 

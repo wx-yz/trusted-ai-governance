@@ -24,6 +24,7 @@ Build: the [`Dockerfile`](Dockerfile) (Agent Manager build type `docker`, Docker
 | `AMP_AGENTID_*` | ignored | injected by AgentID, used to mint a token scoped to the MCP proxy |
 
 Optional: `OPENAI_MODEL` (default `gpt-4o-mini`), `COMPANY_NAME`, `MAX_TOOL_STEPS`, `ENABLE_CORS=true` (laptop only, never on Agent Manager).
+Tracing: each chat session (the `session_id` in the request) is one trace, see [`session_trace.py`](session_trace.py). The response's `governance.trace_id` names it.
 `GET /health` reports `ready` and lists any configuration problems.
 Send the chat message `/diagnose` for a live check of DNS, TCP, the MCP handshake, the tool list, the AgentID token and the model call.
 

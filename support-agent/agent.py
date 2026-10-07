@@ -27,6 +27,7 @@ from config import Config
 from governance import TurnRecorder, guardrail_info
 from identity import AgentIdentity, IdentityNotReady
 from mcp_client import CommerceMcp, classify, explain
+from session_trace import SessionTracer
 
 log = logging.getLogger("support-agent")
 
@@ -75,6 +76,7 @@ class SupportAgent:
         self.identity = AgentIdentity(cfg)
         self.mcp = CommerceMcp(cfg, self.identity)
         self.sessions: dict[str, list[BaseMessage]] = {}
+        self.traces = SessionTracer()  # one trace per chat session, see session_trace.py
         self.tool_total = 0
 
     # ---- tools ------------------------------------------------------------------------------
@@ -109,6 +111,21 @@ class SupportAgent:
     # ---- one chat turn ---------------------------------------------------------------------
 
     async def chat(self, message: str, session_id: str, context: dict[str, Any] | None) -> dict[str, Any]:
+        """One chat turn, recorded as a span inside the session's single trace."""
+        if diagnose.wants_diagnosis(message):  # a self-check, not part of the conversation
+            return await self._turn(message, session_id, context)
+        user = {**DEFAULT_USER, **((context or {}).get("user") or {})}
+        attrs = {"session.id": session_id, "agent.name": self.cfg.agent_name, "customer.id": user["id"]}
+        with self.traces.turn(session_id, message, attrs) as turn:
+            result = await self._turn(message, session_id, context)
+            gov = result["governance"]
+            turn.finish(result["response"],
+                        **{"governance.blocked_layer": (gov.get("blocked") or {}).get("layer"),
+                           "governance.denied_tools": ",".join(e["tool"] for e in gov["events"] if e["type"] == "tool_denied") or None})
+            gov["trace_id"] = turn.trace_id
+            return result
+
+    async def _turn(self, message: str, session_id: str, context: dict[str, Any] | None) -> dict[str, Any]:
         cfg = self.cfg
         started = time.time()
         user = {**DEFAULT_USER, **((context or {}).get("user") or {})}

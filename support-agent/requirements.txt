@@ -7,6 +7,9 @@ langgraph>=0.5.0
 
 # MCP client. Stay on 1.x: the tracing instrumentation targets the 1.x client API.
 mcp>=1.23,<2
+
+# Session tracing (session_trace.py) uses the OpenTelemetry API directly. Without an SDK it is a no-op.
+opentelemetry-api>=1.30
 httpx>=0.27
 
 fastapi==0.139.0

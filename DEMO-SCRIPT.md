@@ -7,7 +7,7 @@
 
 - [ ] Demo UI open at <http://localhost:3000>, browser full screen, **Governance OFF**, press **↺** once.
 - [ ] Agent Manager console open in a second tab, project `support-demo`, on **support-agent-ungoverned › Evaluation**.
-- [ ] The rehearsal you did earlier (both lanes, all six chips) has given the **Refund quality** monitor traces to score. Check the dashboard shows scores before you start. Monitors run every 5 minutes, so do not rely on live scoring during the 5 minutes.
+- [ ] The rehearsal you did earlier (both lanes, all six chips) has been scored: after the rehearsal, run `./deploy/rescore-sessions.sh`, then check each agent's **Evaluation** tab shows scores. Each chat session is one trace, so live scoring during the 5 minutes would miss later turns. Do not rely on it.
 - [ ] Ask one throwaway question on each side (OFF, then ON) so the first real answer is fast. Press **↺** again.
 - [ ] Be upfront if asked: the switch picks between **two deployments of the same agent**. They differ only in configuration the platform owns.
 
@@ -25,6 +25,8 @@
 | **4:15** | Agent Manager › **support-agent-ungoverned › Evaluation** | Show the monitor dashboard, then switch to **support-agent › Evaluation**. Open one ungoverned trace › **Scores**. | "Blocking is half of it. The other half is measuring. This monitor scores every trace: a custom check for refund-policy compliance, plus groundedness, tone and instruction following. Ungoverned: compliance near zero. Governed: one hundred, and tone did not drop. Here is a trace: *'$1,249 store credit issued by the AI without a human.'* That is a finding your risk team can read." |
 | **4:45** | Agent Manager › Observability › Traces | Open the newest trace. | "Every model call and tool call, recorded. That is your audit trail." |
 | **5:00** | | | "Identity, least privilege, guardrails, observability, continuous evaluation. Enforced outside the agent, changed by policy, not code. Prevent what you can at the gateway, measure everything else." |
+
+**Storefront variant:** run the same beats on <http://localhost:3000/store.html>, with the dashboard in a second tab (**▤**). Start on **Account**, use each order's button (*Report a problem*, *Return item*, *Get help*, *View case*) or the chat suggestions, and point at the order cards and the red store-credit pill next to Maya's name as money moves. Flip with the dock switch or **G**.
 
 **Short on time (3 min):** jacket and laptop OFF, flip, jacket and laptop ON, monitor dashboard.
 
