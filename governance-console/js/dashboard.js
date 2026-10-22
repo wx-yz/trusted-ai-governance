@@ -63,6 +63,8 @@
       case "rejected":
         return { ...base, kind: "rejected", icon: "🧾", badge: "REFUSED BY PAYMENTS", title: r.summary,
           detail: "The payments system said no. Watch what the agent does next.", chips };
+      case "denied_by_server":
+        return { ...base, ...serverDenial(r.tool, order, r.summary.replace(/^MCP server denied [^:]+: /, ""), r.scope, 403, "insufficient_scope") };
       case "ok":
         return { ...base, kind: "allowed", icon: "✓", badge: "ALLOWED", title: r.summary, detail: null, chips: [r.tool, r.scope, via] };
       default:
@@ -70,10 +72,22 @@
     }
   }
 
+  // The Orders & Payments server itself refused the call (object-level authorization, MCP 403 insufficient_scope).
+  function serverDenial(tool, order, description, scope, status, error) {
+    return { kind: "block-server", icon: "🔒", badge: "DENIED · MCP SERVER",
+      title: `${tool}${order ? " " + order : ""}: another customer's data was protected`,
+      detail: `${description || "The MCP server refused the call."} The gateway allowed the tool; the server enforced who may see which record.`,
+      chips: [tool, order, `HTTP ${status || 403} ${error || "insufficient_scope"}`, scope ? "needs " + scope : null, "via Agent Manager gateway"].filter(Boolean) };
+  }
+
   function fromAgentEvent(e, lane, turn, turnId) {
     const gov = turn.governance || {};
     const idn = gov.identity || {};
     const base = { ts: e.ts, lane, tool: e.tool, call: e.call_id, amount: 0, turn: turnId };
+    if (e.type === "tool_denied" && e.layer === "mcp-server") {
+      const a = e.args || {};
+      return { ...base, id: "s" + (e.call_id || Math.random()), ...serverDenial(e.tool, a.order_id || a.case_id, e.error_description, e.required_scope, e.status, e.error) };
+    }
     if (e.type === "tool_denied") {
       const amount = Number((e.args || {}).amount) || 0;
       const sup = SUPERVISOR[e.tool];
@@ -108,9 +122,9 @@
   // ---------------------------------------------------------------- rendering
   function metrics() {
     const m = {
-      within: 0, outside: 0, outsideCount: 0, id: 0, llm: 0, protected: 0, audit: 0, govCalls: 0, scorable: 0,
-      by: { governed: { refunds: 0, esc: 0, id: 0, llm: 0, payouts: 0, refused: 0, allowed: 0 },
-            ungoverned: { refunds: 0, esc: 0, id: 0, llm: 0, payouts: 0, refused: 0, allowed: 0, outside: 0 } },
+      within: 0, outside: 0, outsideCount: 0, id: 0, llm: 0, srv: 0, protected: 0, audit: 0, govCalls: 0, scorable: 0,
+      by: { governed: { refunds: 0, esc: 0, id: 0, llm: 0, srv: 0, payouts: 0, refused: 0, allowed: 0 },
+            ungoverned: { refunds: 0, esc: 0, id: 0, llm: 0, srv: 0, payouts: 0, refused: 0, allowed: 0, outside: 0 } },
     };
     const protectedByTurn = {};
     for (const it of S.items) {
@@ -121,10 +135,11 @@
       else if (it.kind === "rejected") { b.refused++; }
       else if (it.kind === "block-agentid") { m.id++; b.id++; const k = it.turn || it.id; protectedByTurn[k] = Math.max(protectedByTurn[k] || 0, it.amount || 0); }
       else if (it.kind === "block-llm") { m.llm++; b.llm++; }
+      else if (it.kind === "block-server") { m.srv++; b.srv++; }
       else if (it.kind === "allowed") { b.allowed++; }
-      if (["payout", "refund", "escalated", "rejected", "allowed"].includes(it.kind)) m.audit++;
+      if (["payout", "refund", "escalated", "rejected", "allowed", "block-server"].includes(it.kind)) m.audit++;
       if (["payout", "refund", "escalated", "rejected", "block-agentid"].includes(it.kind)) m.scorable++;
-      if (L === "governed" && ["allowed", "refund", "escalated", "rejected", "payout", "block-agentid"].includes(it.kind)) m.govCalls++;
+      if (L === "governed" && ["allowed", "refund", "escalated", "rejected", "payout", "block-agentid", "block-server"].includes(it.kind)) m.govCalls++;
     }
     m.protected = Object.values(protectedByTurn).reduce((a, v) => a + v, 0);
     return m;
@@ -164,8 +179,8 @@
     setNum("unRefunds", un.refunds); setNum("unOutside", un.outside, false, true); setNum("unRefused", un.refused); setNum("unHumans", 0);
     $("unMeter").style.width = Math.min(100, (un.outside * 100) / 2000) + "%";
     setVerdict("unVerdict", un.payouts ? ["💸 PAYING OUT OUTSIDE POLICY", "bad"] : un.refused ? ["⚠ REFUSED, LOOKING FOR A WAY", "warn"] : un.refunds || un.allowed ? ["no incident yet", ""] : ["idle", ""]);
-    setNum("gvRefunds", gv.refunds); setNum("gvEsc", gv.esc); setNum("gvBlocked", gv.id + gv.llm); setNum("gvProtected", m.protected, false, true);
-    const gvStopped = gv.id + gv.llm, gvRisky = gvStopped + gv.payouts;
+    setNum("gvRefunds", gv.refunds); setNum("gvEsc", gv.esc); setNum("gvBlocked", gv.id + gv.llm + gv.srv); setNum("gvProtected", m.protected, false, true);
+    const gvStopped = gv.id + gv.llm + gv.srv, gvRisky = gvStopped + gv.payouts;
     $("gvMeter").style.width = (gvRisky ? (100 * gvStopped) / gvRisky : gv.allowed || gv.refunds ? 100 : 0) + "%";
     setVerdict("gvVerdict", gv.payouts ? ["🚨 CHECK ROLE ASSIGNMENT", "bad"] : gvStopped ? ["🛡 ENFORCING", "good"] : gv.allowed || gv.refunds ? ["✓ clean", "good"] : ["idle", ""]);
     $("unTools").textContent = S.lanes.ungoverned.tools ? `${S.lanes.ungoverned.tools}` : "all";
@@ -234,6 +249,9 @@
     } else if (it.kind === "block-agentid") {
       alarm("agentid", `🛡️  BLOCKED BY AGENTID  ·  ${it.amount ? usd(it.amount) + " PROTECTED" : "NO MONEY MOVED"}`); flashLayer("id"); flashLayer("scope");
       note.textContent = "Token lacked the scope. Gateway said 403."; setTimeout(() => { note.innerHTML = "&nbsp;"; }, 3000);
+    } else if (it.kind === "block-server") {
+      alarm("agentid", "🔒  DENIED BY THE MCP SERVER  ·  ANOTHER CUSTOMER'S DATA PROTECTED"); flashLayer("audit");
+      note.textContent = "Gateway allowed the tool. The server said 403 insufficient_scope."; setTimeout(() => { note.innerHTML = "&nbsp;"; }, 3000);
     } else if (it.kind === "block-llm") {
       alarm("llm", "⛔  BLOCKED BY AI GUARDRAIL  ·  MODEL NEVER SAW IT"); flashLayer("llm");
       note.textContent = "Guardrail rejected the LLM request (422)."; setTimeout(() => { note.innerHTML = "&nbsp;"; }, 3000);

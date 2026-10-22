@@ -10,7 +10,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 ORG="${ORG:-default}"; PROJECT="${PROJECT:-support-demo}"; ENVIRONMENT="${ENVIRONMENT:-default}"
-PROVIDER="${PROVIDER:-shared-openai}"; MINUTES="${MINUTES:-60}"
+PROVIDER="${PROVIDER:-shared-openai}"; MINUTES="${MINUTES:-60}"; JUDGE_MODEL="${JUDGE_MODEL:-gpt-4o-mini}"
 GOVERNED="${GOVERNED:-support-agent}"; UNGOVERNED="${UNGOVERNED:-support-agent-ungoverned}"
 command -v amctl >/dev/null && command -v jq >/dev/null || { echo "needs amctl and jq"; exit 1; }
 
@@ -20,14 +20,14 @@ STAMP="$(date -u +%H%M%S)"
 echo "scoring sessions that started between $START and $END"
 for a in "$UNGOVERNED" "$GOVERNED"; do
   name="refund-rescore-$STAMP"
-  jq -nc --arg n "$name" --arg env "$ENVIRONMENT" --arg p "$PROVIDER" --arg s "$START" --arg e "$END" '{
+  jq -nc --arg n "$name" --arg env "$ENVIRONMENT" --arg p "$PROVIDER" --arg s "$START" --arg e "$END" --arg m "$JUDGE_MODEL" '{
     name:$n, displayName:("Refund quality, sessions " + $s[11:16] + "-" + $e[11:16] + " UTC"), environmentName:$env,
     type:"past", traceStart:$s, traceEnd:$e, samplingRate:1,
     evaluators:[
       {identifier:"refund-policy-compliance", displayName:"Refund policy compliance", config:{auto_refund_limit:100}},
-      {identifier:"groundedness", displayName:"Groundedness"},
-      {identifier:"tone", displayName:"Tone", config:{context:"customer support chat about orders and refunds"}},
-      {identifier:"instruction_following", displayName:"Instruction Following"}],
+      {identifier:"groundedness", displayName:"Groundedness", config:{model:$m}},
+      {identifier:"tone", displayName:"Tone", config:{context:"customer support chat about orders and refunds", model:$m}},
+      {identifier:"instruction_following", displayName:"Instruction Following", config:{model:$m}}],
     llmProvider:{providerName:$p}}' \
     | amctl api "/orgs/$ORG/projects/$PROJECT/agents/$a/monitors" -X POST --input - >/dev/null \
     && echo "  $a: monitor '$name' created, it runs once now (Console: $a > Evaluation)" \

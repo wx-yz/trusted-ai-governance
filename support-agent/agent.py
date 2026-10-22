@@ -94,16 +94,31 @@ class SupportAgent:
                 # Our own span inside the instrumented execute_tool span: same call, titled with its payments outcome.
                 with _tracer.start_as_current_span(tool_title(_name, kwargs), attributes={
                         "tool.name": _name, "tool.call_id": call_id, "tool.arguments": json.dumps(kwargs, default=str)[:1000],
-                        "payments.order_id": kwargs.get("order_id") or "", "customer.id": user["id"]}) as span:
+                        "payments.order_id": kwargs.get("order_id") or "", "customer.id": user["id"],
+                        # How the request authenticated, per the MCP authorization spec (never the token itself).
+                        "mcp.request.authorization": "Bearer (AgentID access token)" if self.cfg.mcp_auth == "agentid" else "X-API-Key (shared key)",
+                        "mcp.request.resource": self.cfg.mcp_url}) as span:
                     outcome = await self.mcp.call_tool(_name, kwargs, user["id"], call_id)
                     ms = int((time.time() - started) * 1000)
                     if outcome.denied:
+                        ch = outcome.challenge or {}
+                        by_server = outcome.layer == "mcp-server"
                         rec.add("tool_denied", tool=_name, call_id=call_id, args=kwargs, status=outcome.status,
-                                layer="AgentID", required_scope=outcome.required_scope, detail=outcome.detail, ms=ms)
-                        span.update_name(tool_title(_name, kwargs, denied=True, status=outcome.status, scope=outcome.required_scope))
-                        span.set_attributes({"tool.outcome": "denied", "http.status_code": outcome.status or 403,
-                                             "governance.required_scope": outcome.required_scope or ""})
-                        span.set_status(trace.Status(trace.StatusCode.ERROR, f"blocked at gateway (HTTP {outcome.status})"))
+                                layer="mcp-server" if by_server else "AgentID", required_scope=outcome.required_scope,
+                                error=ch.get("error"), error_description=ch.get("error_description"),
+                                resource_metadata=ch.get("resource_metadata"), detail=outcome.detail, ms=ms)
+                        span.update_name(tool_title(_name, kwargs, denied=True, status=outcome.status, scope=outcome.required_scope,
+                                                    by_server=by_server, error=ch.get("error") if by_server else None))
+                        span.set_attributes({"tool.outcome": "denied_by_mcp_server" if by_server else "denied",
+                                             "governance.layer": "mcp-server" if by_server else "gateway",
+                                             "http.status_code": outcome.status or 403,
+                                             "governance.required_scope": outcome.required_scope or "",
+                                             "mcp.auth.error": ch.get("error", ""),
+                                             "mcp.auth.error_description": ch.get("error_description", ""),
+                                             "mcp.auth.resource_metadata": ch.get("resource_metadata", "")})
+                        span.set_status(trace.Status(trace.StatusCode.ERROR,
+                                                     f"denied by the MCP server: {ch.get('error', 'insufficient_scope')}" if by_server
+                                                     else f"blocked at gateway (HTTP {outcome.status})"))
                     elif not outcome.ok:
                         rec.add("tool_error", tool=_name, call_id=call_id, args=kwargs, detail=outcome.detail, ms=ms)
                         span.update_name(tool_title(_name, kwargs, error=outcome.detail or "failed"))

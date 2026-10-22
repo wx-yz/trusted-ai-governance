@@ -15,9 +15,13 @@ refundable balances, the return window and final-sale items. And it keeps an hon
 that reaches it is recorded with who asked, how much money moved and whether policy allowed it, so the demo
 dashboard can show dollars that really left the business.
 
+Object-level authorization: a call through the gateway that names another customer's order or case is refused by
+this server with the MCP spec's 403 insufficient_scope challenge. See resource_authz.py.
+
 HTTP surface
     /mcp            MCP streamable HTTP (needs X-API-Key)
     /healthz        liveness
+    /.well-known/oauth-protected-resource[/mcp]   Protected Resource Metadata (RFC 9728)
     /audit          audit records, for the demo dashboard (CORS open, demo only)
     /catalog        tool to scope mapping
     /admin/reset    restore seed data and clear the audit log
@@ -27,6 +31,7 @@ HTTP surface
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import threading
 import time
@@ -45,6 +50,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 import data
+import resource_authz
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -73,6 +79,10 @@ PORT = int(os.environ.get("PORT", "8080"))
 # When set, /audit, /catalog and /admin/reset are served on this separate port instead of the MCP port. Agent Manager
 # only accepts a public upstream URL, so the MCP port gets published through a tunnel and the admin port must stay private.
 ADMIN_PORT = int(os.environ.get("COMMERCE_ADMIN_PORT", "0") or 0)
+# The public origin of /mcp (the tunnel URL without /mcp). Used in resource_metadata; derived from the request when unset.
+PUBLIC_URL = os.environ.get("COMMERCE_PUBLIC_URL", "").rstrip("/").removesuffix("/mcp")
+# Advertised in the Protected Resource Metadata. Mock: this server does not validate tokens against it.
+AUTHORIZATION_SERVER = os.environ.get("COMMERCE_AUTHORIZATION_SERVER", "http://thunder.amp.localhost:8080")
 
 SCOPES = ("read", "escalate", "refund", "approve", "credit")
 
@@ -413,6 +423,24 @@ async def reset(_: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "epoch": AUDIT.epoch})
 
 
+def _public_base(headers: dict[str, str]) -> str:
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    host = headers.get("x-forwarded-host") or headers.get("host") or f"localhost:{PORT}"
+    proto = headers.get("x-forwarded-proto") or ("http" if host.startswith(("localhost", "127.")) else "https")
+    return f"{proto}://{host}"
+
+
+async def protected_resource(request: Request) -> JSONResponse:
+    scopes = [f"commerce:{s}" for s in SCOPES]
+    return JSONResponse(resource_authz.protected_resource_metadata(
+        _public_base({k.lower(): v for k, v in request.headers.items()}), AUTHORIZATION_SERVER, scopes))
+
+
+for _path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
+    mcp.custom_route(_path, methods=["GET"])(protected_resource)
+
+
 ADMIN_ROUTES = [("/audit", audit, ["GET"]), ("/catalog", catalog, ["GET"]), ("/admin/reset", reset, ["POST"])]
 if not ADMIN_PORT:  # single-port mode (local runs, docker compose, tests)
     for _path, _fn, _methods in ADMIN_ROUTES:
@@ -445,9 +473,59 @@ class ApiKeyAuth:
         await self.app(scope, receive, send)
 
 
+class ResourceAuthz:
+    """Object-level authorization for tools/call on the gateway channel (resource_authz.py). Runs after ApiKeyAuth."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"].rstrip("/") != "/mcp":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
+        if KEYS.get(headers.get("x-api-key", "")) != "gateway":
+            await self.app(scope, receive, send)
+            return
+        body, more = b"", True
+        while more:  # read the JSON-RPC message, then hand the same bytes on to the MCP app
+            msg = await receive()
+            body += msg.get("body", b"")
+            more = msg.get("more_body", False)
+        try:
+            message = json.loads(body or b"null")
+        except ValueError:
+            message = None
+        customer_id = headers.get("x-customer-id")
+        denial = resource_authz.check_tool_call(message, customer_id,
+                                                resource_authz.bearer_scopes(headers.get("authorization", "")))
+        if denial is None:
+            replayed = False
+
+            async def replay():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": body, "more_body": False}
+                return await receive()
+
+            await self.app(scope, replay, send)
+            return
+        customer = data.CUSTOMERS.get(customer_id or "")
+        AUDIT.add(call_id=headers.get("x-call-id", ""), tool=denial.tool, scope=denial.scope, args=denial.args,
+                  customer_id=customer_id, customer_name=customer["name"] if customer else None,
+                  agent=headers.get("x-agent-name", "unknown"), channel="gateway",
+                  amount=denial.args.get("amount", denial.args.get("requested_amount")), order_id=denial.order_id,
+                  policy="object_scope", human_approved=False, verdict="denied_by_server",
+                  summary=f"MCP server denied {denial.tool}: {denial.description}")
+        hdrs, payload = resource_authz.challenge(denial, _public_base(headers))
+        await JSONResponse(payload, status_code=403, headers=hdrs)(scope, receive, send)
+
+
 def build_app():
     app = mcp.streamable_http_app()
-    app.add_middleware(ApiKeyAuth)
+    app.add_middleware(ResourceAuthz)
+    app.add_middleware(ApiKeyAuth)  # added last, so it runs first
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
                        expose_headers=["*"])
     return app

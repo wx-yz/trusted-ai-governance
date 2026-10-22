@@ -3,7 +3,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY data.py server.py ./
+COPY data.py resource_authz.py server.py ./
 EXPOSE 8080 8081
 USER 10001
 CMD ["python", "server.py"]

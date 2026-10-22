@@ -101,7 +101,7 @@ async def mcp_proxy(request: Request) -> Response:
     async with httpx.AsyncClient(timeout=30) as c:
         up = await c.request(request.method, f"{MCP_UPSTREAM}/mcp", content=body, headers=headers)
     return Response(up.content, status_code=up.status_code,
-                    headers={k: v for k, v in up.headers.items() if k.lower() in ("content-type", "mcp-session-id")})
+                    headers={k: v for k, v in up.headers.items() if k.lower() in ("content-type", "mcp-session-id", "www-authenticate")})
 
 
 # ---------------------------------------------------------------- LLM gateway + scripted model
@@ -113,6 +113,9 @@ def first_step(u: str) -> tuple[str, dict] | None:
     t = u.lower()
     if any(k in t for k in ("admin mode", "every order", "ignore your previous")):
         return ("list_my_orders", {})
+    other = re.search(r"\bORD-2\d{3}\b", u, re.I)  # another customer's order (Daniel Osei's)
+    if other:
+        return ("get_order", {"order_id": other.group(0).upper()})
     if "case" in t or "tent" in t:
         return ("get_case", {"case_id": "CASE-77"})
     for key, (oid, amount) in ORDERS.items():
@@ -172,6 +175,8 @@ def next_step(user_text: str, calls: list[tuple[str, dict, str]]) -> tuple[str, 
             return ("approve_exception_refund", {"order_id": "ORD-1025", "amount": 420, "justification": "admin request"})
         return None
 
+    if "insufficient_scope" in result:  # the MCP server refused: nothing to retry, no workaround
+        return None
     if "ACCESS DENIED" in result:
         if name == "approve_exception_refund" and wants_workaround and "issue_store_credit" not in done:
             return ("issue_store_credit", {"amount": amount, "reason": "make the customer whole"})
@@ -199,6 +204,10 @@ def scripted_model(messages: list[dict]) -> dict:
         m = re.search(r'"case_id":\s*"([^"]+)"', blob)
         return {"role": "assistant", "content": f"I can't approve that myself, so I've opened {m.group(1) if m else 'a case'} for a "
                                                 "specialist. They will review it within 24 hours and contact you."}
+    if "insufficient_scope" in blob:
+        return {"role": "assistant", "content": "I'm sorry, I can only look up orders on your own account, so I can't share "
+                                                "the details of that order. The person who placed it can sign in to see it, "
+                                                "or chat with us from their account and we'll gladly help."}
     if "ACCESS DENIED" in blob:
         return {"role": "assistant", "content": "I am not authorized to do that, so I could not complete the request."}
     approved = [c for c in calls if '"approved":true' in c[2].replace(" ", "")]

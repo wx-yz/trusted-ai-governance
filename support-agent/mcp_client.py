@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import McpError
 
 from config import Config
@@ -29,6 +30,49 @@ class ToolOutcome:
     status: int | None = None
     required_scope: str | None = None
     detail: str | None = None
+    layer: str | None = None  # who denied: "gateway" (AgentID tool scopes) or "mcp-server" (the server's own check)
+    challenge: dict[str, str] | None = None  # the WWW-Authenticate parameters (RFC 6750 section 3)
+
+
+_PARAM = re.compile(r'([a-zA-Z_]+)\s*=\s*"((?:[^"\\]|\\.)*)"')
+
+
+def parse_challenge(header: str) -> dict[str, str]:
+    """Parameters of a Bearer WWW-Authenticate challenge: error, scope, resource_metadata, error_description."""
+    if not header or not header.strip().lower().startswith("bearer"):
+        return {}
+    return {k.lower(): v for k, v in _PARAM.findall(header)}
+
+
+def challenge_of(exc: BaseException) -> dict[str, str]:
+    """The authorization challenge of a 401/403, from the WWW-Authenticate header or, when a proxy dropped the
+    header, from the same parameters repeated in a JSON body."""
+    for e in _leaves(exc):
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (401, 403):
+            found = parse_challenge(e.response.headers.get("www-authenticate", ""))
+            try:
+                body = json.loads(e.response.content or b"{}")
+            except (ValueError, httpx.ResponseNotRead):
+                body = {}
+            if isinstance(body, dict):
+                for k in ("error", "scope", "resource_metadata", "error_description"):
+                    if isinstance(body.get(k), str):
+                        found.setdefault(k, body[k])
+            return found
+    return {}
+
+
+async def _read_error_body(response: httpx.Response) -> None:
+    # The MCP client raises on a 4xx before reading the body; read it first so the challenge in it is available.
+    if response.status_code >= 400:
+        await response.aread()
+
+
+def _http_client(headers: dict[str, str] | None = None, timeout: httpx.Timeout | None = None,
+                 auth: httpx.Auth | None = None) -> httpx.AsyncClient:
+    client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+    client.event_hooks["response"].append(_read_error_body)
+    return client
 
 
 # A gateway normally denies with HTTP 403, but some paths report the same thing as a JSON-RPC error.
@@ -132,6 +176,12 @@ class CommerceMcp:
         self.cfg = cfg
         self.identity = identity
 
+    def _from_resource_server(self, ch: dict[str, str]) -> bool:
+        """A 403 challenge comes from the MCP server, not the gateway, when it explains itself (error_description)
+        and asks for a scope outside the gateway's tool scopes, the ones this agent's AgentID can be granted."""
+        gateway_scopes = set((self.cfg.agentid_scopes or "").split())
+        return bool(ch.get("error_description")) and ch.get("scope", "") not in gateway_scopes
+
     async def _headers(self, user_id: str | None, call_id: str) -> dict[str, str]:
         headers = await self.identity.auth_headers(self.cfg.mcp_url)
         headers["X-Call-Id"] = call_id
@@ -151,7 +201,8 @@ class CommerceMcp:
     async def call_tool(self, name: str, arguments: dict[str, Any], user_id: str | None, call_id: str) -> ToolOutcome:
         try:
             headers = await self._headers(user_id, call_id)
-            async with streamablehttp_client(self.cfg.mcp_url, headers=headers, timeout=30) as (r, w, _):
+            async with streamablehttp_client(self.cfg.mcp_url, headers=headers, timeout=30,
+                                             httpx_client_factory=_http_client) as (r, w, _):
                 async with ClientSession(r, w) as session:
                     await session.initialize()
                     result = await session.call_tool(name, arguments)
@@ -159,12 +210,25 @@ class CommerceMcp:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             status, scope, message = classify(exc)
+            ch = challenge_of(exc)
+            if status == 403 and self._from_resource_server(ch):
+                # The MCP server itself refused (object-level authorization). Tell the model what a customer may hear.
+                return ToolOutcome(
+                    text=f"REFUSED BY THE ORDERS & PAYMENTS SERVER (HTTP 403, {ch.get('error', 'insufficient_scope')}, "
+                         f"required scope: {ch.get('scope', '?')}): {ch.get('error_description', 'not authorized')} "
+                         "This is a privacy rule, not a fault: do not retry and do not try other tools for this record. "
+                         "Do not reveal anything about the record. Tell the customer kindly that you can only help with "
+                         "their own account, and that the account holder can sign in or contact support themselves.",
+                    ok=False, denied=True, status=403, required_scope=ch.get("scope") or scope, detail=message,
+                    layer="mcp-server", challenge=ch,
+                )
             if status in (401, 403):
                 why = f" (required scope: {scope})" if scope else ""
                 return ToolOutcome(
                     text=f"ACCESS DENIED (HTTP {status}): this agent is not authorized to call {name}{why}. "
                          "The request was blocked by the gateway, so no data was returned.",
                     ok=False, denied=True, status=status, required_scope=scope, detail=message,
+                    layer="gateway", challenge=ch or None,
                 )
             return ToolOutcome(text=f"ERROR calling {name}: {message}", ok=False, status=status, detail=message)
 
@@ -174,7 +238,7 @@ class CommerceMcp:
                 return ToolOutcome(
                     text=f"ACCESS DENIED (HTTP 403): this agent is not authorized to call {name}. "
                          "The request was blocked by the gateway, so no data was returned.",
-                    ok=False, denied=True, status=403, detail=text,
+                    ok=False, denied=True, status=403, detail=text, layer="gateway",
                 )
             return ToolOutcome(text=f"ERROR: {text}", ok=False, detail=text)
         return ToolOutcome(text=_compact(text))

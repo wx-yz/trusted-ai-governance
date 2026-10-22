@@ -109,6 +109,7 @@ body.dash.compact { padding: 12px 14px; gap: 12px; }
 .card .chips2 code { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: rgba(0, 0, 0, .3); border: 1px solid var(--line); color: #c6d2f7; }
 .card.k-leak, .card.k-leak-write { --c: var(--red); animation: slideIn .45s cubic-bezier(.2, .9, .2, 1), shake .55s .1s, edge 1.3s .5s 3; }
 .card.k-block-agentid { --c: var(--violet); }
+.card.k-block-server { --c: var(--cyan); }
 .card.k-block-llm { --c: var(--amber); }
 .card.k-exposure { --c: var(--orange); }
 .card.k-write { --c: var(--orange); }

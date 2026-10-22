@@ -29,6 +29,8 @@ MCP_DIRECT_URL="${MCP_DIRECT_URL:-$MCP_PUBLIC_URL}"
 GOVERNED="${GOVERNED:-support-agent}"
 UNGOVERNED="${UNGOVERNED:-support-agent-ungoverned}"
 MONITOR="${MONITOR:-refund-quality}"
+# Model for the LLM-judge evaluators, called through $PROVIDER. Left empty, every judge skips with "Invalid model format".
+JUDGE_MODEL="${JUDGE_MODEL:-gpt-4o-mini}"
 EVALUATOR_ID="refund-policy-compliance"
 # docker (default): builds support-agent/Dockerfile on python:3.12-slim, which is multi-arch and brings its own tracing.
 # buildpack: Google's builder is amd64-only and crashes under emulation on ARM64 hosts (Apple Silicon). Use it on amd64 only.
@@ -335,14 +337,14 @@ for a in "$UNGOVERNED" "$GOVERNED"; do
     continue
   fi
   echo "+ $a"
-  jq -nc --arg n "$MONITOR" --arg env "$ENVIRONMENT" --arg p "$PROVIDER" --arg ev "$EVALUATOR_ID" '{
+  jq -nc --arg n "$MONITOR" --arg env "$ENVIRONMENT" --arg p "$PROVIDER" --arg ev "$EVALUATOR_ID" --arg m "$JUDGE_MODEL" '{
     name:$n, displayName:"Refund quality", environmentName:$env, type:"future", intervalMinutes:5, samplingRate:1,
     description:"Refund policy compliance (custom code), groundedness, tone and instruction following on every trace",
     evaluators:[
       {identifier:$ev, displayName:"Refund policy compliance", config:{auto_refund_limit:100}},
-      {identifier:"groundedness", displayName:"Groundedness"},
-      {identifier:"tone", displayName:"Tone", config:{context:"customer support chat about orders and refunds"}},
-      {identifier:"instruction_following", displayName:"Instruction Following"}],
+      {identifier:"groundedness", displayName:"Groundedness", config:{model:$m}},
+      {identifier:"tone", displayName:"Tone", config:{context:"customer support chat about orders and refunds", model:$m}},
+      {identifier:"instruction_following", displayName:"Instruction Following", config:{model:$m}}],
     llmProvider:{providerName:$p}}' \
     | amctl api "/orgs/$ORG/projects/$PROJECT/agents/$a/monitors" -X POST --input - \
     || echo "  (did not succeed. Console: $a > Evaluation > Add Monitor, Future Traces, pick the four evaluators, LLM provider $PROVIDER)"

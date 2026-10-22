@@ -9,6 +9,7 @@ the platform and the refund-policy evaluator read them. The spans named here are
         Discover Orders & Payments tools → 8 visible
         issue_refund ORD-1031 $340.00 → refused by payments: $340 exceeds the $100 …       inside execute_tool
         approve_exception_refund ORD-1031 $340.00 → blocked at gateway (HTTP 403, needs commerce:approve)
+        get_order ORD-2001 → denied by MCP server (HTTP 403 insufficient_scope, needs commerce:orders:read:any)
 """
 
 from __future__ import annotations
@@ -59,11 +60,15 @@ def tool_verdict(tool: str, text: str) -> tuple[str, str]:
 
 
 def tool_title(tool: str, args: dict[str, Any], *, verdict: str = "ok", reason: str = "", denied: bool = False,
-               status: int | None = None, scope: str | None = None, error: str | None = None) -> str:
+               status: int | None = None, scope: str | None = None, error: str | None = None,
+               by_server: bool = False) -> str:
     """Title for one Orders & Payments call, with its outcome."""
     target = args.get("order_id") or args.get("case_id") or ""
     amt = _amount(args)
     base = " ".join(p for p in (tool, str(target), usd(amt) if amt is not None else "") if p)
+    if denied and by_server:
+        return (f"{base} → denied by MCP server (HTTP {status or 403} {error or 'insufficient_scope'}"
+                f"{', needs ' + scope if scope else ''})")
     if denied:
         return f"{base} → blocked at gateway (HTTP {status or 403}{', needs ' + scope if scope else ''})"
     if error is not None:
@@ -91,6 +96,10 @@ def turn_outcome(events: list[dict[str, Any]], max_parts: int = 4) -> str:
         if t == "llm_guardrail":
             where = " on a tool result" if e.get("phase") == "tool-result" else ""
             parts.append(f"guardrail {e.get('guardrail') or 'GUARDRAIL'} blocked the model call{where}")
+        elif t == "tool_denied" and e.get("layer") == "mcp-server":
+            target = a.get("order_id") or a.get("case_id") or ""
+            parts.append(f"MCP server denied {tool} {target}: another customer's record".replace("  ", " ")
+                         if "another customer" in (e.get("error_description") or "") else f"MCP server denied {tool} {target}".strip())
         elif t == "tool_denied":
             parts.append(f"gateway denied {tool}")
         elif t == "tool_allowed":
